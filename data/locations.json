@@ -1,0 +1,11 @@
+[
+  { "id": 1, "name": "Delhi NCR" },
+  { "id": 2, "name": "Noida" },
+  { "id": 3, "name": "Ghaziabad" },
+  { "id": 4, "name": "Aligarh" },
+  { "id": 5, "name": "Uttar Pradesh" },
+  { "id": 6, "name": "Bihar" },
+  { "id": 7, "name": "Haryana" },
+  { "id": 8, "name": "Punjab" },
+  { "id": 9, "name": "Maharashtra" }
+]

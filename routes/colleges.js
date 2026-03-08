@@ -8,6 +8,12 @@ const express = require("express");
 const router = express.Router();
 const db = require("../database.js");
 
+// Convert SQLite-style "?" placeholders to Postgres "$1, $2, ..." placeholders
+function toPgSql(sql) {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+}
+
 //seacrh college 
 
 // Budget ranges in INR (like Croma price filter)
@@ -22,7 +28,7 @@ const BUDGET_RANGES = [
   { id: "30l+", min: 3000000, max: 999999999, label: "Above ₹30,00,000" },
 ];
 
-router.get("/", (req, res) => {
+router.get("/", async (req, res) => {
   const course = (req.query.course || "").trim().toLowerCase();
   const location = (req.query.location || "").trim().toLowerCase();
   const specialization = (req.query.specialization || "").trim().toLowerCase();
@@ -94,7 +100,7 @@ router.get("/", (req, res) => {
   sql += " ORDER BY co.total_fees ASC, c.rating DESC";
 
   try {
-    const rows = db.prepare(sql).all(...params);
+    const { rows } = await db.query(toPgSql(sql), params);
 
     const data = rows.map((r) => ({
       id: `${r.college_id}-${r.course_id}`,
@@ -159,10 +165,10 @@ router.get("/search", async (req, res) => {
   }
 
   try {
-    const rows = await db.all(
-      `SELECT id, name FROM colleges WHERE name LIKE ? LIMIT 10`,
-      [`%${q}%`]
+    const text = toPgSql(
+      `SELECT id, name FROM colleges WHERE name LIKE ? LIMIT 10`
     );
+    const { rows } = await db.query(text, [`%${q}%`]);
 
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -171,7 +177,7 @@ router.get("/search", async (req, res) => {
 });
 
 // GET budget ranges for filter UI
-router.get("/budget-ranges", (req, res) => {
+router.get("/budget-ranges", async (req, res) => {
   const course = (req.query.course || "").trim().toLowerCase();
   const location = (req.query.location || "").trim().toLowerCase();
   const mode = (req.query.mode || "").toLowerCase();
@@ -197,7 +203,7 @@ router.get("/budget-ranges", (req, res) => {
   }
 
   try {
-    const rows = db.prepare(baseSql).all(...params);
+    const { rows } = await db.query(toPgSql(baseSql), params);
     const feesList = rows.map((r) => r.total_fees);
 
     const rangesWithCount = BUDGET_RANGES.map((r) => {
@@ -213,13 +219,14 @@ router.get("/budget-ranges", (req, res) => {
 });
 
 // GET all unique course names for dropdown
-router.get("/course-list", (req, res) => {
+router.get("/course-list", async (req, res) => {
   try {
-    const rows = db.prepare(`
+    const text = `
       SELECT DISTINCT name as course_name
       FROM courses
       ORDER BY name
-    `).all();
+    `;
+    const { rows } = await db.query(text);
     res.json({ success: true, data: rows.map((r) => r.course_name) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -227,14 +234,15 @@ router.get("/course-list", (req, res) => {
 });
 
 // GET all specializations for dropdown
-router.get("/specializations", (req, res) => {
+router.get("/specializations", async (req, res) => {
   try {
-    const rows = db.prepare(`
+    const text = `
       SELECT DISTINCT specialization
       FROM courses
       WHERE specialization IS NOT NULL AND specialization != ''
       ORDER BY specialization
-    `).all();
+    `;
+    const { rows } = await db.query(text);
     res.json({ success: true, data: rows.map((r) => r.specialization) });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

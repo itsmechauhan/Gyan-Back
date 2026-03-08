@@ -10,6 +10,12 @@ const router = express.Router();
 const db = require("../database.js");
 const nodemailer = require("nodemailer");
 
+// Convert SQLite-style "?" placeholders to Postgres "$1, $2, ..." placeholders
+function toPgSql(sql) {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+}
+
 /* ================================
    ENV VARIABLES
 ================================ */
@@ -81,11 +87,11 @@ ${enquiry.message || "No message provided"}
 /* ================================
    ADMIN: GET ALL ENQUIRIES
 ================================ */
-router.get("/", (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const rows = db
-      .prepare("SELECT * FROM enquiries ORDER BY id DESC")
-      .all();
+    const { rows } = await db.query(
+      "SELECT * FROM enquiries ORDER BY id DESC"
+    );
 
     res.json({
       success: true,
@@ -122,13 +128,13 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    const stmt = db.prepare(`
+    const text = toPgSql(`
       INSERT INTO enquiries 
       (college_id, course_id, name, course_level, location, phone, message)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
+    const values = [
       college_id ? parseInt(college_id, 10) : null,
       course_id ? parseInt(course_id, 10) : null,
       name,
@@ -136,11 +142,10 @@ router.post("/", async (req, res) => {
       location || null,
       String(phone),
       message || null
-    );
+    ];
 
-    const row = db
-      .prepare("SELECT * FROM enquiries WHERE id = ?")
-      .get(result.lastInsertRowid);
+    const { rows } = await db.query(`${text} RETURNING *`, values);
+    const row = rows[0];
 
     // Send email notification
     try {

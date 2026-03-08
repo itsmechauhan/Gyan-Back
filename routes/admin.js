@@ -8,10 +8,17 @@
 const express = require("express");
 const router = express.Router();
 const db = require("../database.js");
+const { pool } = db;
 const multer = require("multer");
 const xlsx = require("xlsx");
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+// Convert SQLite-style "?" placeholders to Postgres "$1, $2, ..." placeholders
+function toPgSql(sql) {
+  let index = 0;
+  return sql.replace(/\?/g, () => `$${++index}`);
+}
 
 const ADMIN_PASSWORD = "GyanPradeep@001";
 
@@ -49,25 +56,37 @@ router.use((req, res, next) => {
 
 // --- COLLEGES CRUD ---
 
-router.get("/colleges", (req, res) => {
+router.get("/colleges", async (req, res) => {
   try {
-    const rows = db.prepare(`
+    const { rows } = await db.query(
+      `
       SELECT * FROM colleges ORDER BY id
-    `).all();
+    `
+    );
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.get("/colleges/:id", (req, res) => {
+router.get("/colleges/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const row = db.prepare("SELECT * FROM colleges WHERE id = ?").get(id);
-  if (!row) return res.status(404).json({ success: false, error: "College not found" });
-  res.json({ success: true, data: row });
+  try {
+    const { rows } = await db.query(
+      toPgSql("SELECT * FROM colleges WHERE id = ?"),
+      [id]
+    );
+    const row = rows[0];
+    if (!row) {
+      return res.status(404).json({ success: false, error: "College not found" });
+    }
+    res.json({ success: true, data: row });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-router.post("/colleges", (req, res) => {
+router.post("/colleges", async (req, res) => {
   const {
     name,
     location,
@@ -85,11 +104,11 @@ router.post("/colleges", (req, res) => {
     return res.status(400).json({ success: false, error: "name, location, type, mode required" });
   }
   try {
-    const stmt = db.prepare(`
+    const text = toPgSql(`
       INSERT INTO colleges (name, location, type, mode, best_feature, image_url, description, image_gallery, rating, reviews_count, admission_status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const result = stmt.run(
+    const values = [
       name,
       location,
       type || "Government",
@@ -98,18 +117,18 @@ router.post("/colleges", (req, res) => {
       image_url || null,
       description || null,
       image_gallery || null,
-      rating || 4.5,
-      reviews_count || 0,
-      admission_status || "open"
-    );
-    const row = db.prepare("SELECT * FROM colleges WHERE id = ?").get(result.lastInsertRowid);
-    res.status(201).json({ success: true, data: row });
+      rating ?? 4.5,
+      reviews_count ?? 0,
+      admission_status || "open",
+    ];
+    const { rows } = await db.query(`${text} RETURNING *`, values);
+    res.status(201).json({ success: true, data: rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.put("/colleges/:id", (req, res) => {
+router.put("/colleges/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const {
     name,
@@ -124,11 +143,15 @@ router.put("/colleges/:id", (req, res) => {
     reviews_count,
     admission_status,
   } = req.body;
-  const existing = db.prepare("SELECT * FROM colleges WHERE id = ?").get(id);
-  if (!existing) return res.status(404).json({ success: false, error: "College not found" });
-
   try {
-    db.prepare(`
+    const { rows: existingRows } = await db.query(
+      toPgSql("SELECT * FROM colleges WHERE id = ?"),
+      [id]
+    );
+    const existing = existingRows[0];
+    if (!existing) return res.status(404).json({ success: false, error: "College not found" });
+
+    const text = toPgSql(`
       UPDATE colleges SET
         name = COALESCE(?, name),
         location = COALESCE(?, location),
@@ -142,7 +165,8 @@ router.put("/colleges/:id", (req, res) => {
         reviews_count = COALESCE(?, reviews_count),
         admission_status = COALESCE(?, admission_status)
       WHERE id = ?
-    `).run(
+    `);
+    const values = [
       name || existing.name,
       location || existing.location,
       type || existing.type,
@@ -154,21 +178,29 @@ router.put("/colleges/:id", (req, res) => {
       rating !== undefined ? rating : existing.rating,
       reviews_count !== undefined ? reviews_count : existing.reviews_count,
       admission_status !== undefined ? admission_status : (existing.admission_status || "open"),
-      id
+      id,
+    ];
+    await db.query(text, values);
+    const { rows } = await db.query(
+      toPgSql("SELECT * FROM colleges WHERE id = ?"),
+      [id]
     );
-    const row = db.prepare("SELECT * FROM colleges WHERE id = ?").get(id);
-    res.json({ success: true, data: row });
+    res.json({ success: true, data: rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.delete("/colleges/:id", (req, res) => {
+router.delete("/colleges/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   try {
-    db.prepare("DELETE FROM courses WHERE college_id = ?").run(id);
-    const result = db.prepare("DELETE FROM colleges WHERE id = ?").run(id);
-    if (result.changes === 0) return res.status(404).json({ success: false, error: "College not found" });
+    await db.query(toPgSql("DELETE FROM courses WHERE college_id = ?"), [id]);
+    const result = await db.query(
+      toPgSql("DELETE FROM colleges WHERE id = ?"),
+      [id]
+    );
+    if (result.rowCount === 0)
+      return res.status(404).json({ success: false, error: "College not found" });
     res.json({ success: true, message: "College deleted" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -177,44 +209,52 @@ router.delete("/colleges/:id", (req, res) => {
 
 // --- COURSES CRUD ---
 
-router.get("/courses", (req, res) => {
+router.get("/courses", async (req, res) => {
   try {
-    const rows = db.prepare(`
+    const { rows } = await db.query(
+      `
       SELECT co.*, c.name as college_name, c.location
       FROM courses co
       JOIN colleges c ON c.id = co.college_id
       ORDER BY co.college_id, co.id
-    `).all();
+    `
+    );
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.get("/courses/:id", (req, res) => {
+router.get("/courses/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const row = db.prepare(`
+  try {
+    const text = toPgSql(`
     SELECT co.*, c.name as college_name, c.location
     FROM courses co
     JOIN colleges c ON c.id = co.college_id
     WHERE co.id = ?
-  `).get(id);
-  if (!row) return res.status(404).json({ success: false, error: "Course not found" });
-  res.json({ success: true, data: row });
+  `);
+    const { rows } = await db.query(text, [id]);
+    const row = rows[0];
+    if (!row) return res.status(404).json({ success: false, error: "Course not found" });
+    res.json({ success: true, data: row });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
-router.post("/courses", (req, res) => {
+router.post("/courses", async (req, res) => {
   const { college_id, name, duration, total_fees, best_feature, location, specialization, features } = req.body;
   if (!college_id || !name || !duration || total_fees == null) {
     return res.status(400).json({ success: false, error: "college_id, name, duration, total_fees required" });
   }
   try {
     const featuresValue = features ? (typeof features === "string" ? features : JSON.stringify(features)) : null;
-    const stmt = db.prepare(`
+    const text = toPgSql(`
       INSERT INTO courses (college_id, name, duration, total_fees, best_feature, location, specialization, features)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const result = stmt.run(
+    const values = [
       college_id,
       name,
       duration,
@@ -222,26 +262,34 @@ router.post("/courses", (req, res) => {
       best_feature || null,
       location || null,
       specialization || null,
-      featuresValue || null
-    );
-    const row = db.prepare("SELECT * FROM courses WHERE id = ?").get(result.lastInsertRowid);
-    res.status(201).json({ success: true, data: row });
+      featuresValue || null,
+    ];
+    const { rows } = await db.query(`${text} RETURNING *`, values);
+    res.status(201).json({ success: true, data: rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.put("/courses/:id", (req, res) => {
+router.put("/courses/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const { college_id, name, duration, total_fees, best_feature, location, specialization, features } = req.body;
-  const existing = db.prepare("SELECT * FROM courses WHERE id = ?").get(id);
-  if (!existing) return res.status(404).json({ success: false, error: "Course not found" });
-
   try {
-    const featuresValue = features !== undefined 
-      ? (typeof features === "string" ? features : JSON.stringify(features))
-      : existing.features;
-    db.prepare(`
+    const { rows: existingRows } = await db.query(
+      toPgSql("SELECT * FROM courses WHERE id = ?"),
+      [id]
+    );
+    const existing = existingRows[0];
+    if (!existing) return res.status(404).json({ success: false, error: "Course not found" });
+
+    const featuresValue =
+      features !== undefined
+        ? typeof features === "string"
+          ? features
+          : JSON.stringify(features)
+        : existing.features;
+
+    const text = toPgSql(`
       UPDATE courses SET
         college_id = COALESCE(?, college_id),
         name = COALESCE(?, name),
@@ -252,7 +300,8 @@ router.put("/courses/:id", (req, res) => {
         specialization = ?,
         features = ?
       WHERE id = ?
-    `).run(
+    `);
+    const values = [
       college_id || existing.college_id,
       name || existing.name,
       duration || existing.duration,
@@ -261,46 +310,56 @@ router.put("/courses/:id", (req, res) => {
       location !== undefined ? location : existing.location,
       specialization !== undefined ? specialization : existing.specialization,
       featuresValue,
-      id
+      id,
+    ];
+    await db.query(text, values);
+    const { rows } = await db.query(
+      toPgSql("SELECT * FROM courses WHERE id = ?"),
+      [id]
     );
-    const row = db.prepare("SELECT * FROM courses WHERE id = ?").get(id);
-    res.json({ success: true, data: row });
+    res.json({ success: true, data: rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.delete("/courses/:id", (req, res) => {
+router.delete("/courses/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const result = db.prepare("DELETE FROM courses WHERE id = ?").run(id);
-  if (result.changes === 0) return res.status(404).json({ success: false, error: "Course not found" });
+  const result = await db.query(
+    toPgSql("DELETE FROM courses WHERE id = ?"),
+    [id]
+  );
+  if (result.rowCount === 0)
+    return res.status(404).json({ success: false, error: "Course not found" });
   res.json({ success: true, message: "Course deleted" });
 });
 
 // --- ENQUIRIES (ADMIN) ---
 
-router.get("/enquiries", (req, res) => {
+router.get("/enquiries", async (req, res) => {
   try {
-    const rows = db
-      .prepare(
-        `
+    const { rows } = await db.query(
+      `
         SELECT *
         FROM enquiries
-        ORDER BY datetime(created_at) DESC, id DESC
+        ORDER BY created_at DESC, id DESC
       `
-      )
-      .all();
+    );
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-router.delete("/enquiries/:id", (req, res) => {
+router.delete("/enquiries/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   try {
-    const result = db.prepare("DELETE FROM enquiries WHERE id = ?").run(id);
-    if (result.changes === 0) return res.status(404).json({ success: false, error: "Enquiry not found" });
+    const result = await db.query(
+      toPgSql("DELETE FROM enquiries WHERE id = ?"),
+      [id]
+    );
+    if (result.rowCount === 0)
+      return res.status(404).json({ success: false, error: "Enquiry not found" });
     res.json({ success: true, message: "Enquiry deleted" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -311,7 +370,7 @@ router.delete("/enquiries/:id", (req, res) => {
 
 
 // Import colleges from Excel/CSV
-router.post("/colleges/import", upload.single("file"), (req, res) => {
+router.post("/colleges/import", upload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success: false, error: "No file uploaded" });
   }
@@ -322,13 +381,13 @@ router.post("/colleges/import", upload.single("file"), (req, res) => {
     const sheet = workbook.Sheets[sheetName];
     const rows = xlsx.utils.sheet_to_json(sheet, { defval: "" });
 
-    const insertStmt = db.prepare(`
+    const insertSql = toPgSql(`
       INSERT INTO colleges 
       (name, location, type, mode, best_feature, image_url, description, image_gallery, rating, reviews_count, admission_status)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const updateStmt = db.prepare(`
+    const updateSql = toPgSql(`
       UPDATE colleges SET
         name = ?,
         location = ?,
@@ -344,18 +403,15 @@ router.post("/colleges/import", upload.single("file"), (req, res) => {
       WHERE id = ?
     `);
 
-    const findById = db.prepare("SELECT id FROM colleges WHERE id = ?");
-    const findByNameLocation = db.prepare(
-      "SELECT id FROM colleges WHERE name = ? AND location = ?"
-    );
-
     const summary = { inserted: 0, updated: 0 };
+    const client = await pool.connect();
 
-    const tx = db.transaction(() => {
-      rows.forEach((row) => {
+    try {
+      await client.query("BEGIN");
 
+      for (const row of rows) {
         const rawId = row.id || row.ID || "";
-        const id = String(rawId).trim() !== "" ? parseInt(rawId) : null;
+        const id = String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
 
         const name = row.name || row.Name;
         const location = row.location || row.Location;
@@ -369,22 +425,28 @@ router.post("/colleges/import", upload.single("file"), (req, res) => {
         const reviews_count = row.reviews_count || row.ReviewsCount || 0;
         const admission_status = row.admission_status || row.AdmissionStatus || "open";
 
-        if (!name || !location) return;
+        if (!name || !location) continue;
 
-        let existing = null;
+        let existingId = null;
 
-        // 🔎 First check by ID (if given)
         if (id) {
-          existing = findById.get(id);
+          const { rows: byId } = await client.query(
+            toPgSql("SELECT id FROM colleges WHERE id = ?"),
+            [id]
+          );
+          if (byId[0]) existingId = byId[0].id;
         }
 
-        // 🔎 If no ID match, check by name + location
-        if (!existing) {
-          existing = findByNameLocation.get(name, location);
+        if (!existingId) {
+          const { rows: byNameLoc } = await client.query(
+            toPgSql("SELECT id FROM colleges WHERE name = ? AND location = ?"),
+            [name, location]
+          );
+          if (byNameLoc[0]) existingId = byNameLoc[0].id;
         }
 
-        if (existing) {
-          updateStmt.run(
+        if (existingId) {
+          await client.query(updateSql, [
             name,
             location,
             type,
@@ -396,11 +458,11 @@ router.post("/colleges/import", upload.single("file"), (req, res) => {
             rating,
             reviews_count,
             admission_status,
-            existing.id
-          );
+            existingId,
+          ]);
           summary.updated++;
         } else {
-          insertStmt.run(
+          await client.query(insertSql, [
             name,
             location,
             type,
@@ -411,18 +473,21 @@ router.post("/colleges/import", upload.single("file"), (req, res) => {
             image_gallery,
             rating,
             reviews_count,
-            admission_status
-          );
+            admission_status,
+          ]);
           summary.inserted++;
         }
+      }
 
-      });
-    });
-
-    tx();
+      await client.query("COMMIT");
+    } catch (innerErr) {
+      await client.query("ROLLBACK");
+      throw innerErr;
+    } finally {
+      client.release();
+    }
 
     res.json({ success: true, summary });
-
   } catch (err) {
     console.error("Colleges import failed:", err);
     res.status(500).json({ success: false, error: err.message });
@@ -430,9 +495,9 @@ router.post("/colleges/import", upload.single("file"), (req, res) => {
 });
 
 // Export all colleges as Excel
-router.get("/colleges-export", (req, res) => {
+router.get("/colleges-export", async (req, res) => {
   try {
-    const rows = db.prepare("SELECT * FROM colleges ORDER BY id").all();
+    const { rows } = await db.query("SELECT * FROM colleges ORDER BY id");
     const worksheet = xlsx.utils.json_to_sheet(rows);
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, "Colleges");
@@ -449,7 +514,7 @@ router.get("/colleges-export", (req, res) => {
 
 
 // Import courses from Excel/CSV
-router.post("/courses/import", upload.single("file"), (req, res) => {
+router.post("/courses/import", upload.single("file"), async (req, res) => {
   if (!req.file) {
     return res.status(400).json({ success: false, error: "No file uploaded" });
   }
@@ -460,13 +525,13 @@ router.post("/courses/import", upload.single("file"), (req, res) => {
     const sheet = workbook.Sheets[sheetName];
     const rows = xlsx.utils.sheet_to_json(sheet, { defval: "" });
 
-    const insertStmt = db.prepare(`
+    const insertSql = toPgSql(`
       INSERT INTO courses 
       (college_id, name, duration, total_fees, best_feature, location, specialization, features)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const updateStmt = db.prepare(`
+    const updateSql = toPgSql(`
       UPDATE courses SET
         college_id = ?,
         name = ?,
@@ -479,16 +544,15 @@ router.post("/courses/import", upload.single("file"), (req, res) => {
       WHERE id = ?
     `);
 
-    const findCourseById = db.prepare("SELECT id FROM courses WHERE id = ?");
-    const findCollege = db.prepare("SELECT id FROM colleges WHERE id = ?");
-
     const summary = { inserted: 0, updated: 0, skipped: 0 };
+    const client = await pool.connect();
 
-    const tx = db.transaction(() => {
-      rows.forEach((row) => {
+    try {
+      await client.query("BEGIN");
 
+      for (const row of rows) {
         const rawId = row.id || row.ID || "";
-        const id = String(rawId).trim() !== "" ? parseInt(rawId) : null;
+        const id = String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
 
         const college_id = parseInt(
           row.college_id || row.CollegeId || row["College ID"],
@@ -514,22 +578,27 @@ router.post("/courses/import", upload.single("file"), (req, res) => {
         // Required validation
         if (!college_id || !name || !duration || !total_fees) {
           summary.skipped++;
-          return;
+          continue;
         }
 
         // FOREIGN KEY CHECK (important)
-        const collegeExists = findCollege.get(college_id);
-        if (!collegeExists) {
+        const { rows: collegeRows } = await client.query(
+          toPgSql("SELECT id FROM colleges WHERE id = ?"),
+          [college_id]
+        );
+        if (!collegeRows[0]) {
           console.log("Invalid college_id:", college_id);
           summary.skipped++;
-          return;
+          continue;
         }
 
-        // 🔹 UPDATE only if ID exists in DB
         if (id) {
-          const existing = findCourseById.get(id);
-          if (existing) {
-            updateStmt.run(
+          const { rows: existingRows } = await client.query(
+            toPgSql("SELECT id FROM courses WHERE id = ?"),
+            [id]
+          );
+          if (existingRows[0]) {
+            await client.query(updateSql, [
               college_id,
               name,
               duration,
@@ -538,15 +607,14 @@ router.post("/courses/import", upload.single("file"), (req, res) => {
               location,
               specialization,
               features,
-              id
-            );
+              id,
+            ]);
             summary.updated++;
-            return;
+            continue;
           }
         }
 
-        // 🔹 Otherwise INSERT
-        insertStmt.run(
+        await client.query(insertSql, [
           college_id,
           name,
           duration,
@@ -554,29 +622,30 @@ router.post("/courses/import", upload.single("file"), (req, res) => {
           best_feature,
           location,
           specialization,
-          features
-        );
+          features,
+        ]);
         summary.inserted++;
+      }
 
-      });
-    });
-
-    tx();
+      await client.query("COMMIT");
+    } catch (innerErr) {
+      await client.query("ROLLBACK");
+      throw innerErr;
+    } finally {
+      client.release();
+    }
 
     res.json({ success: true, summary });
-
   } catch (err) {
     console.error("Courses import failed:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-
-
 // Export all courses as Excel
-router.get("/courses-export", (req, res) => {
+router.get("/courses-export", async (req, res) => {
   try {
-    const rows = db.prepare("SELECT * FROM courses ORDER BY id").all();
+    const { rows } = await db.query("SELECT * FROM courses ORDER BY id");
     const worksheet = xlsx.utils.json_to_sheet(rows);
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, "Courses");

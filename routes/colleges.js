@@ -249,23 +249,5 @@ router.get("/specializations", async (req, res) => {
   }
 });
 
-router.get("/:id", async (req, res) => {
-  const id = req.params.id;
-
-  try {
-    const { rows } = await db.query(
-      "SELECT * FROM colleges WHERE id = $1",
-      [id]
-    );
-
-    if (!rows.length) {
-      return res.status(404).json({ success: false, message: "College not found" });
-    }
-
-    res.json({ success: true, data: rows[0] });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
 module.exports = router;
 module.exports.BUDGET_RANGES = BUDGET_RANGES;

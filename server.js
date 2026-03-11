@@ -80,4 +80,7 @@ app.get("/api", (req, res) => {
 /* =============================
    START SERVER
 ============================= */
-module.exports = app;
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});

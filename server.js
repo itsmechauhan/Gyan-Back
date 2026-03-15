@@ -3,6 +3,7 @@
  * Database: SQLite
  */
 
+
 const express = require("express");
 const cors = require("cors");
 require("./database.js");
@@ -11,7 +12,8 @@ const collegesRoute = require("./routes/colleges.js");
 const adminRoute = require("./routes/admin.js");
 const reviewsRoute = require("./routes/reviews.js");
 const enquiriesRoute = require("./routes/enquiries.js");
-
+const demoFormRoutes = require("./routes/demoForm.js");
+const universityRoutes = require("./routes/University.js");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -67,6 +69,8 @@ app.use("/api/admin", adminRoute);
 app.use("/api/reviews", reviewsRoute);
 app.use("/api/enquiries", enquiriesRoute);
 
+app.use("/api/universities", universityRoutes);
+app.use("/api/demoform", demoFormRoutes);
 /* =============================
    TEST ROUTE
 ============================= */

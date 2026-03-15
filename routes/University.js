@@ -1,6 +1,6 @@
 /**
- * GET /api/university
- * Returns university listings from colleges table only
+ * GET /api/universities
+ * Returns university listings from colleges table
  */
 
 const express = require("express");
@@ -22,6 +22,8 @@ router.get("/", async (req, res) => {
 
   const location = (req.query.location || "").trim().toLowerCase();
   const mode = (req.query.mode || "").toLowerCase();
+  const type = (req.query.type || "").toLowerCase();
+  const nirfSort = (req.query.nirf_sort || "").toLowerCase();
 
   let sql = `
     SELECT
@@ -36,6 +38,9 @@ router.get("/", async (req, res) => {
       image_gallery,
       rating,
       reviews_count,
+      nirf_rank,
+      min_fees,
+      max_fees,
       COALESCE(admission_status,'open') as admission_status
     FROM colleges
     WHERE 1=1
@@ -44,17 +49,41 @@ router.get("/", async (req, res) => {
   const params = [];
 
 
+  /* LOCATION FILTER */
+
   if (location) {
     sql += " AND LOWER(location) LIKE ?";
     params.push(`%${location}%`);
   }
+
+
+  /* MODE FILTER */
 
   if (mode === "online" || mode === "offline") {
     sql += " AND LOWER(mode) = ?";
     params.push(mode);
   }
 
-  sql += " ORDER BY rating DESC";
+
+  /* TYPE FILTER */
+
+  if (type === "government" || type === "private") {
+    sql += " AND LOWER(type) = ?";
+    params.push(type);
+  }
+
+
+  /* SORTING */
+
+  if (nirfSort === "asc") {
+    sql += " ORDER BY nirf_rank ASC NULLS LAST";
+  } 
+  else if (nirfSort === "desc") {
+    sql += " ORDER BY nirf_rank DESC NULLS LAST";
+  } 
+  else {
+    sql += " ORDER BY rating DESC";
+  }
 
 
   try {
@@ -80,6 +109,12 @@ router.get("/", async (req, res) => {
       description: r.description,
 
       image_url: r.image_url,
+
+      nirf_rank: r.nirf_rank,
+
+      min_fees: r.min_fees,
+
+      max_fees: r.max_fees,
 
       image_gallery: (() => {
         if (!r.image_gallery) return [];

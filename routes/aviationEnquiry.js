@@ -5,7 +5,7 @@ const db = require("../database.js");
 const nodemailer = require("nodemailer");
 
 /* ================================
-   ENV — same as demoForm.js
+   ENV VARIABLES
 ================================ */
 const SMTP_HOST       = process.env.SMTP_HOST;
 const SMTP_PORT       = parseInt(process.env.SMTP_PORT || "465", 10);
@@ -14,8 +14,7 @@ const SMTP_PASS       = process.env.SMTP_PASS;
 const NOTIFY_EMAIL_TO = process.env.NOTIFY_EMAIL_TO || SMTP_USER;
 
 /* ================================
-   TRANSPORTER — exact copy of
-   working demoForm.js transporter
+   TRANSPORTER
 ================================ */
 let transporter = null;
 
@@ -30,7 +29,6 @@ if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
     },
   });
 
-  // ✅ same verify as demoForm.js
   transporter.verify((error) => {
     if (error) {
       console.error("SMTP Connection Error:", error.message);
@@ -41,29 +39,30 @@ if (SMTP_HOST && SMTP_USER && SMTP_PASS) {
 }
 
 /* ================================
-   SEND EMAIL — same style as
-   sendDemoEmail() in demoForm.js
+   SEND EMAIL
 ================================ */
-async function sendAviationEmail(data) {
-  if (!transporter || !NOTIFY_EMAIL_TO) {
-    console.warn("Email not configured. Skipping email send.");
+async function sendAviationEmail(name, email, phone, course) {
+  // ── Direct values, no object ──
+  console.log("📧 Attempting to send email...");
+  console.log("TO      :", NOTIFY_EMAIL_TO);
+  console.log("FROM    :", SMTP_USER);
+  console.log("NAME    :", name);
+  console.log("EMAIL   :", email);
+  console.log("PHONE   :", phone);
+  console.log("COURSE  :", course);
+
+  if (!transporter) {
+    console.error("❌ No transporter!");
     return;
   }
 
-  const subject = `New Aviation Enquiry from ${data.name}`;
+  if (!NOTIFY_EMAIL_TO) {
+    console.error("❌ No NOTIFY_EMAIL_TO!");
+    return;
+  }
 
-  /* ── Plain Text (same as demoForm) ── */
-  const textBody = `
-New Aviation Enquiry
-====================
+  const subject = `New Aviation Enquiry from ${name}`;
 
-Name    : ${data.name}
-Email   : ${data.email}
-Phone   : ${data.phone}
-Course  : ${data.course || "N/A"}
-  `;
-
-  /* ── HTML Email ── */
   const htmlBody = `
 <!DOCTYPE html>
 <html lang="en">
@@ -86,8 +85,8 @@ Course  : ${data.course || "N/A"}
 
           <!-- HEADER -->
           <tr>
-            <td style="background:linear-gradient(135deg,#0d1b5e 0%,#2563eb 100%);
-                       padding:36px 40px;">
+            <td style="background:linear-gradient(135deg,#0d1b5e 0%,
+                       #2563eb 100%);padding:36px 40px;">
               <p style="margin:0;color:rgba(255,255,255,0.7);
                          font-size:11px;letter-spacing:2px;
                          text-transform:uppercase;font-weight:600;">
@@ -107,8 +106,8 @@ Course  : ${data.course || "N/A"}
 
           <!-- COLOR BAR -->
           <tr>
-            <td style="height:4px;
-                       background:linear-gradient(90deg,#2563eb,#60a5fa,#2563eb);">
+            <td style="height:4px;background:linear-gradient(
+                       90deg,#2563eb,#60a5fa,#2563eb);">
             </td>
           </tr>
 
@@ -136,7 +135,7 @@ Course  : ${data.course || "N/A"}
                     </p>
                     <p style="margin:6px 0 0;font-size:16px;
                                color:#0d1b5e;font-weight:700;">
-                      ${data.name}
+                      ${name}
                     </p>
                   </td>
                 </tr>
@@ -153,10 +152,11 @@ Course  : ${data.course || "N/A"}
                                letter-spacing:1.2px;">
                       📧 Email Address
                     </p>
-                    <p style="margin:6px 0 0;font-size:15px;font-weight:600;">
-                      <a href="mailto:${data.email}"
+                    <p style="margin:6px 0 0;font-size:15px;
+                               font-weight:600;">
+                      <a href="mailto:${email}"
                          style="color:#2563eb;text-decoration:none;">
-                        ${data.email}
+                        ${email}
                       </a>
                     </p>
                   </td>
@@ -176,9 +176,9 @@ Course  : ${data.course || "N/A"}
                     </p>
                     <p style="margin:6px 0 0;font-size:16px;
                                color:#0d1b5e;font-weight:700;">
-                      <a href="tel:${data.phone}"
+                      <a href="tel:${phone}"
                          style="color:#0d1b5e;text-decoration:none;">
-                        ${data.phone}
+                        ${phone}
                       </a>
                     </p>
                   </td>
@@ -197,7 +197,7 @@ Course  : ${data.course || "N/A"}
                     </p>
                     <p style="margin:6px 0 0;font-size:15px;
                                color:#0d1b5e;font-weight:700;">
-                      ${data.course || "Not Specified"}
+                      ${course || "Not Specified"}
                     </p>
                   </td>
                 </tr>
@@ -211,9 +211,10 @@ Course  : ${data.course || "N/A"}
             <td style="padding:0 40px 32px;">
               <table width="100%" cellpadding="0" cellspacing="0">
                 <tr>
-                  <td style="background:linear-gradient(135deg,#eff6ff,#dbeafe);
-                             border:1px solid #bfdbfe;border-radius:12px;
-                             padding:20px 24px;">
+                  <td style="background:linear-gradient(
+                             135deg,#eff6ff,#dbeafe);
+                             border:1px solid #bfdbfe;
+                             border-radius:12px;padding:20px 24px;">
                     <table width="100%" cellpadding="0" cellspacing="0">
                       <tr>
                         <td>
@@ -223,17 +224,21 @@ Course  : ${data.course || "N/A"}
                           </p>
                           <p style="margin:7px 0 0;font-size:12px;
                                      color:#3b5bdb;line-height:1.65;">
-                            Contact this student to guide them on the
-                            right aviation career path.
+                            Contact this student to guide them on
+                            the right aviation career path.
                           </p>
                         </td>
                         <td align="right" valign="middle"
-                            style="padding-left:20px;white-space:nowrap;">
-                          <a href="tel:${data.phone}"
+                            style="padding-left:20px;
+                                   white-space:nowrap;">
+                          <a href="tel:${phone}"
                              style="display:inline-block;
-                                    background:#2563eb;color:#ffffff;
-                                    text-decoration:none;padding:12px 22px;
-                                    border-radius:8px;font-size:12px;
+                                    background:#2563eb;
+                                    color:#ffffff;
+                                    text-decoration:none;
+                                    padding:12px 22px;
+                                    border-radius:8px;
+                                    font-size:12px;
                                     font-weight:700;">
                             📞 Call Now
                           </a>
@@ -294,7 +299,6 @@ Course  : ${data.course || "N/A"}
           </tr>
 
         </table>
-
       </td>
     </tr>
   </table>
@@ -303,7 +307,21 @@ Course  : ${data.course || "N/A"}
 </html>
   `;
 
-  await transporter.sendMail({
+  const textBody = `
+NEW AVIATION ENQUIRY — Ascot Asia
+=====================================
+Name    : ${name}
+Email   : ${email}
+Phone   : ${phone}
+Course  : ${course || "Not Specified"}
+Time    : ${new Date().toLocaleString("en-IN", {
+    timeZone: "Asia/Kolkata",
+  })} IST
+=====================================
+ACTION: Please respond within 24 hours.
+  `;
+
+  const info = await transporter.sendMail({
     from:    `"Aviation Enquiry" <${SMTP_USER}>`,
     to:      NOTIFY_EMAIL_TO,
     subject,
@@ -311,7 +329,8 @@ Course  : ${data.course || "N/A"}
     html:    htmlBody,
   });
 
-  console.log("✅ Aviation enquiry email sent to:", NOTIFY_EMAIL_TO);
+  console.log("✅ Aviation email sent! ID:", info.messageId);
+  return info;
 }
 
 /* ================================
@@ -342,22 +361,62 @@ ensureTable();
 ================================ */
 router.get("/", (req, res) => {
   res.json({
-    success:  true,
-    message:  "Aviation Enquiry API running ✅",
-    smtp:     transporter     ? "✅ Ready"  : "❌ Not configured",
-    notifyTo: NOTIFY_EMAIL_TO ? "✅ Set"    : "❌ Missing",
+    success:     true,
+    message:     "Aviation Enquiry API running ✅",
+    smtp:        transporter     ? "✅ Ready"  : "❌ Not configured",
+    notifyTo:    NOTIFY_EMAIL_TO ? "✅ Set"    : "❌ Missing",
   });
 });
 
 /* ================================
+   GET — SMTP Test
+================================ */
+router.get("/test-email", async (req, res) => {
+  try {
+    if (!transporter) {
+      return res.json({
+        success: false,
+        error: "Transporter is NULL",
+        env: {
+          SMTP_HOST:       process.env.SMTP_HOST       || "❌ NOT SET",
+          SMTP_PORT:       process.env.SMTP_PORT        || "❌ NOT SET",
+          SMTP_USER:       process.env.SMTP_USER        || "❌ NOT SET",
+          SMTP_PASS:       process.env.SMTP_PASS        ? "✅ Set" : "❌ NOT SET",
+          NOTIFY_EMAIL_TO: process.env.NOTIFY_EMAIL_TO  || "❌ NOT SET",
+        },
+      });
+    }
+
+    await transporter.sendMail({
+      from:    `"SMTP Test" <${SMTP_USER}>`,
+      to:      NOTIFY_EMAIL_TO,
+      subject: "✅ SMTP Test — Aviation",
+      text:    "SMTP is working!",
+      html:    "<h2>✅ SMTP Working!</h2>",
+    });
+
+    res.json({ success: true, message: "Test email sent! Check inbox." });
+
+  } catch (err) {
+    res.json({
+      success: false,
+      error:   err.message,
+      code:    err.code,
+    });
+  }
+});
+
+/* ================================
    POST /api/aviation-enquiry
+   ── KEY FIX: pass raw values
+      not the DB row object ──
 ================================ */
 router.post("/", async (req, res) => {
-  console.log("📩 Aviation enquiry:", req.body);
+  console.log("📩 Aviation enquiry received:", req.body);
 
   const { name, email, phone, course } = req.body || {};
 
-  // Validation
+  // ── Validation ──
   if (!name || !email || !phone) {
     return res.status(400).json({
       success: false,
@@ -366,36 +425,45 @@ router.post("/", async (req, res) => {
   }
 
   try {
-    // ── Save to DB ──
-    const sql = `
-      INSERT INTO aviation_enquiries (name, email, phone, course)
-      VALUES (\$1, \$2, \$3, \$4)
-      RETURNING *
-    `;
+    // ── 1. Save to DB ──
+    const { rows } = await db.query(
+      `INSERT INTO aviation_enquiries (name, email, phone, course)
+       VALUES (\$1, \$2, \$3, \$4)
+       RETURNING *`,
+      [
+        name.trim(),
+        email.trim().toLowerCase(),
+        String(phone).trim(),
+        course || null,
+      ]
+    );
 
-    const values = [
-      name.trim(),
-      email.trim().toLowerCase(),
-      String(phone).trim(),
-      course || null,
-    ];
-
-    const { rows } = await db.query(sql, values);
     const row = rows[0];
     console.log("✅ Saved to DB — ID:", row.id);
 
-    // ── Send Email ──  same pattern as demoForm.js
+    // ── 2. Send Email ──
+    // ✅ KEY FIX: Pass individual values directly
+    //    NOT the row object (avoids any field mismatch)
     try {
-      await sendAviationEmail(row);
-    } catch (mailError) {
-      console.error("Failed to send aviation email:", mailError.message);
+      await sendAviationEmail(
+        row.name,
+        row.email,
+        row.phone,
+        row.course
+      );
+    } catch (mailErr) {
+      console.error("❌ Email error:", mailErr.message);
+      console.error("❌ Full:", mailErr);
     }
 
     return res.status(201).json({ success: true, data: row });
 
   } catch (err) {
     console.error("❌ DB error:", err.message);
-    return res.status(500).json({ success: false, error: err.message });
+    return res.status(500).json({
+      success: false,
+      error:   err.message,
+    });
   }
 });
 

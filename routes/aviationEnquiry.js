@@ -147,6 +147,41 @@ async function ensureTable() {
 
 ensureTable();
 
+// TEMPORARY TEST ROUTE - remove after testing
+router.get("/test-email", async (req, res) => {
+  try {
+    if (!transporter) {
+      return res.json({ 
+        success: false, 
+        error: "Transporter is NULL - SMTP env vars missing",
+        env: {
+          SMTP_HOST: process.env.SMTP_HOST ? "✅ Set" : "❌ Missing",
+          SMTP_PORT: process.env.SMTP_PORT ? "✅ Set" : "❌ Missing",
+          SMTP_USER: process.env.SMTP_USER ? "✅ Set" : "❌ Missing",
+          SMTP_PASS: process.env.SMTP_PASS ? "✅ Set" : "❌ Missing",
+          NOTIFY_EMAIL_TO: process.env.NOTIFY_EMAIL_TO ? "✅ Set" : "❌ Missing",
+        }
+      });
+    }
+
+    await transporter.sendMail({
+      from: `"Test Mail" <${process.env.SMTP_USER}>`,
+      to: process.env.NOTIFY_EMAIL_TO,
+      subject: "✅ SMTP Test - Aviation Enquiry",
+      html: "<h1>SMTP is working!</h1><p>Test email from Aviation Enquiry route.</p>",
+    });
+
+    res.json({ success: true, message: "Test email sent! Check inbox." });
+
+  } catch (err) {
+    res.json({ 
+      success: false, 
+      error: err.message,
+      code: err.code,
+      command: err.command 
+    });
+  }
+});
 /* ================================
    POST /api/aviation-enquiry
 ================================ */

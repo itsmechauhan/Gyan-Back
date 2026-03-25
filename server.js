@@ -16,7 +16,7 @@ const demoFormRoutes = require("./routes/demoForm.js");
 const universityRoutes = require("./routes/University.js");
 const app = express();
 const PORT = process.env.PORT || 5000;
-
+const aviationEnquiryRoute = require("./routes/aviationEnquiry.js");
 /* =============================
    CORS CONFIGURATION (FINAL)
 ============================= */
@@ -68,7 +68,7 @@ app.use("/api/colleges", collegesRoute);
 app.use("/api/admin", adminRoute);
 app.use("/api/reviews", reviewsRoute);
 app.use("/api/enquiries", enquiriesRoute);
-
+app.use("/api/aviation-enquiry", aviationEnquiryRoute);
 app.use("/api/universities", universityRoutes);
 app.use("/api/demoform", demoFormRoutes);
 /* =============================

@@ -2,6 +2,7 @@
  * Admin CRUD API for colleges and courses
  * GET/POST/PUT/DELETE /api/admin/colleges
  * GET/POST/PUT/DELETE /api/admin/courses
+ * POST/DELETE /api/admin/colleges/:id/brochure
  * Password: GyanPradeep@001
  */
 
@@ -11,18 +12,39 @@ const db = require("../database.js");
 const { pool } = db;
 const multer = require("multer");
 const xlsx = require("xlsx");
-const { createClient } = require('@supabase/supabase-js');
+const { createClient } = require("@supabase/supabase-js");
 
+// Multer for Excel/CSV imports
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Supabase client for Storage operations
+// Multer for brochure upload (5MB limit, PDF/image only)
+const brochureUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "application/pdf",
+      "image/jpeg",
+      "image/png",
+      "image/webp",
+    ];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only PDF, JPG, PNG, WEBP files allowed for brochures."));
+    }
+  },
+});
+
+// Supabase client for Storage
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const supabase = (supabaseUrl && supabaseServiceKey) 
-  ? createClient(supabaseUrl, supabaseServiceKey)
-  : null;
+const supabase =
+  supabaseUrl && supabaseServiceKey
+    ? createClient(supabaseUrl, supabaseServiceKey)
+    : null;
 
-// Convert SQLite-style "?" placeholders to Postgres "$1, $2, ..." placeholders
+// Convert SQLite-style "?" placeholders to Postgres "$1, $2, ..."
 function toPgSql(sql) {
   let index = 0;
   return sql.replace(/\?/g, () => `$${++index}`);
@@ -34,20 +56,28 @@ const ADMIN_PASSWORD = "GyanPradeep@001";
 const requireAuth = (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return res.status(401).json({ success: false, error: "Unauthorized. Password required." });
+    return res
+      .status(401)
+      .json({ success: false, error: "Unauthorized. Password required." });
   }
   const token = authHeader.substring(7);
   if (token !== ADMIN_PASSWORD) {
-    return res.status(401).json({ success: false, error: "Invalid password." });
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid password." });
   }
   next();
 };
 
-// Login endpoint (no auth required) - must be defined before middleware
+// Login endpoint (no auth required)
 router.post("/login", (req, res) => {
   const { password } = req.body;
   if (password === ADMIN_PASSWORD) {
-    res.json({ success: true, message: "Login successful", token: ADMIN_PASSWORD });
+    res.json({
+      success: true,
+      message: "Login successful",
+      token: ADMIN_PASSWORD,
+    });
   } else {
     res.status(401).json({ success: false, error: "Invalid password" });
   }
@@ -55,22 +85,19 @@ router.post("/login", (req, res) => {
 
 // Apply auth middleware to all routes except login
 router.use((req, res, next) => {
-  // Skip auth for login route
   if (req.path === "/login" && req.method === "POST") {
     return next();
   }
   requireAuth(req, res, next);
 });
 
+// ========================================
 // --- COLLEGES CRUD ---
+// ========================================
 
 router.get("/colleges", async (req, res) => {
   try {
-    const { rows } = await db.query(
-      `
-      SELECT * FROM colleges ORDER BY id
-    `
-    );
+    const { rows } = await db.query(`SELECT * FROM colleges ORDER BY id`);
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -86,7 +113,9 @@ router.get("/colleges/:id", async (req, res) => {
     );
     const row = rows[0];
     if (!row) {
-      return res.status(404).json({ success: false, error: "College not found" });
+      return res
+        .status(404)
+        .json({ success: false, error: "College not found" });
     }
     res.json({ success: true, data: row });
   } catch (err) {
@@ -107,14 +136,20 @@ router.post("/colleges", async (req, res) => {
     rating,
     reviews_count,
     admission_status,
+    brochure_url,
   } = req.body;
   if (!name || !location || !type || !mode) {
-    return res.status(400).json({ success: false, error: "name, location, type, mode required" });
+    return res.status(400).json({
+      success: false,
+      error: "name, location, type, mode required",
+    });
   }
   try {
     const text = toPgSql(`
-      INSERT INTO colleges (name, location, type, mode, best_feature, image_url, description, image_gallery, rating, reviews_count, admission_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO colleges
+        (name, location, type, mode, best_feature, image_url, description,
+         image_gallery, rating, reviews_count, admission_status, brochure_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const values = [
       name,
@@ -128,6 +163,7 @@ router.post("/colleges", async (req, res) => {
       rating ?? 4.5,
       reviews_count ?? 0,
       admission_status || "open",
+      brochure_url || null,
     ];
     const { rows } = await db.query(`${text} RETURNING *`, values);
     res.status(201).json({ success: true, data: rows[0] });
@@ -150,6 +186,7 @@ router.put("/colleges/:id", async (req, res) => {
     rating,
     reviews_count,
     admission_status,
+    brochure_url,
   } = req.body;
   try {
     const { rows: existingRows } = await db.query(
@@ -157,7 +194,10 @@ router.put("/colleges/:id", async (req, res) => {
       [id]
     );
     const existing = existingRows[0];
-    if (!existing) return res.status(404).json({ success: false, error: "College not found" });
+    if (!existing)
+      return res
+        .status(404)
+        .json({ success: false, error: "College not found" });
 
     const text = toPgSql(`
       UPDATE colleges SET
@@ -171,7 +211,8 @@ router.put("/colleges/:id", async (req, res) => {
         image_gallery = ?,
         rating = COALESCE(?, rating),
         reviews_count = COALESCE(?, reviews_count),
-        admission_status = COALESCE(?, admission_status)
+        admission_status = COALESCE(?, admission_status),
+        brochure_url = ?
       WHERE id = ?
     `);
     const values = [
@@ -184,8 +225,13 @@ router.put("/colleges/:id", async (req, res) => {
       description !== undefined ? description : existing.description,
       image_gallery !== undefined ? image_gallery : existing.image_gallery,
       rating !== undefined ? rating : existing.rating,
-      reviews_count !== undefined ? reviews_count : existing.reviews_count,
-      admission_status !== undefined ? admission_status : (existing.admission_status || "open"),
+      reviews_count !== undefined
+        ? reviews_count
+        : existing.reviews_count,
+      admission_status !== undefined
+        ? admission_status
+        : existing.admission_status || "open",
+      brochure_url !== undefined ? brochure_url : existing.brochure_url,
       id,
     ];
     await db.query(text, values);
@@ -202,173 +248,258 @@ router.put("/colleges/:id", async (req, res) => {
 router.delete("/colleges/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   try {
-    // Delete associated brochure from storage if exists
+    // Delete brochure from Supabase Storage if exists
     if (supabase) {
-      const { rows } = await db.query(
-        toPgSql("SELECT brochure_url FROM colleges WHERE id = ?"),
-        [id]
-      );
-      if (rows[0]?.brochure_url) {
-        const pathMatch = rows[0].brochure_url.match(/brochures\/(.+)$/);
-        if (pathMatch) {
-          await supabase.storage.from('brochures').remove([`brochures/${pathMatch[1]}`]);
+      try {
+        const { rows: collegeRows } = await db.query(
+          toPgSql("SELECT brochure_filename FROM colleges WHERE id = ?"),
+          [id]
+        );
+        if (collegeRows[0] && collegeRows[0].brochure_filename) {
+          await supabase.storage
+            .from("brochures")
+            .remove([collegeRows[0].brochure_filename]);
         }
+      } catch (storageErr) {
+        console.warn(
+          "Failed to delete brochure from storage:",
+          storageErr.message
+        );
       }
     }
-    
-    await db.query(toPgSql("DELETE FROM courses WHERE college_id = ?"), [id]);
+
+    await db.query(
+      toPgSql("DELETE FROM courses WHERE college_id = ?"),
+      [id]
+    );
     const result = await db.query(
       toPgSql("DELETE FROM colleges WHERE id = ?"),
       [id]
     );
     if (result.rowCount === 0)
-      return res.status(404).json({ success: false, error: "College not found" });
+      return res
+        .status(404)
+        .json({ success: false, error: "College not found" });
     res.json({ success: true, message: "College deleted" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// --- BROCHURE UPLOAD/DELETE ---
+// ========================================
+// ★★★ BROCHURE UPLOAD / DELETE ★★★
+// ========================================
 
 // Upload brochure for a college
-router.post("/colleges/:id/brochure", upload.single("brochure"), async (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  
-  if (!req.file) {
-    return res.status(400).json({ success: false, error: "No brochure file uploaded" });
-  }
+router.post(
+  "/colleges/:id/brochure",
+  brochureUpload.single("brochure"),
+  async (req, res) => {
+    const id = parseInt(req.params.id, 10);
 
-  if (!supabase) {
-    return res.status(500).json({ success: false, error: "Supabase not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY" });
-  }
+    console.log("=== BROCHURE UPLOAD START ===");
+    console.log("College ID:", id);
+    console.log("File received:", req.file ? "YES" : "NO");
+    console.log("Supabase configured:", !!supabase);
+    console.log("SUPABASE_URL exists:", !!process.env.SUPABASE_URL);
+    console.log("SUPABASE_KEY exists:", !!process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-  try {
-    // Check if college exists
-    const { rows: collegeRows } = await db.query(
-      toPgSql("SELECT id, brochure_url FROM colleges WHERE id = ?"),
-      [id]
-    );
-    
-    if (!collegeRows[0]) {
-      return res.status(404).json({ success: false, error: "College not found" });
+    if (!req.file) {
+      console.log("ERROR: No file uploaded");
+      return res.status(400).json({ success: false, error: "No brochure file uploaded" });
     }
 
-    // Delete old brochure if exists
-    if (collegeRows[0].brochure_url) {
-      const oldPathMatch = collegeRows[0].brochure_url.match(/brochures\/(.+)$/);
-      if (oldPathMatch) {
-        await supabase.storage.from('brochures').remove([`brochures/${oldPathMatch[1]}`]);
-      }
-    }
-
-    // Create unique filename: college-{id}-{timestamp}.{ext}
-    const fileExt = req.file.originalname.split('.').pop();
-    const fileName = `college-${id}-${Date.now()}.${fileExt}`;
-    const filePath = `brochures/${fileName}`;
-
-    // Upload to Supabase Storage
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('brochures')
-      .upload(filePath, req.file.buffer, {
-        contentType: req.file.mimetype,
-        cacheControl: '3600',
-        upsert: true
-      });
-
-    if (uploadError) {
-      throw uploadError;
-    }
-
-    // Get public URL
-    const { data: { publicUrl } } = supabase.storage
-      .from('brochures')
-      .getPublicUrl(filePath);
-
-    // Update database
-    const updateSql = toPgSql(`
-      UPDATE colleges SET
-        brochure_url = ?,
-        brochure_filename = ?,
-        brochure_mime_type = ?
-      WHERE id = ?
-    `);
-    
-    await db.query(updateSql, [
-      publicUrl,
-      req.file.originalname,
-      req.file.mimetype,
-      id
-    ]);
-
-    // Return updated college
-    const { rows } = await db.query(
-      toPgSql("SELECT * FROM colleges WHERE id = ?"),
-      [id]
-    );
-
-    res.json({ 
-      success: true, 
-      message: "Brochure uploaded successfully",
-      data: rows[0] 
+    console.log("File details:", {
+      name: req.file.originalname,
+      type: req.file.mimetype,
+      size: req.file.size
     });
 
-  } catch (err) {
-    console.error("Brochure upload error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    if (!supabase) {
+      console.log("ERROR: Supabase client is null");
+      return res.status(500).json({ 
+        success: false, 
+        error: "Supabase not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY" 
+      });
+    }
+
+    try {
+      // Check if college exists
+      console.log("Step 1: Checking college in DB...");
+      const { rows: collegeRows } = await db.query(
+        toPgSql("SELECT id, brochure_url FROM colleges WHERE id = ?"),
+        [id]
+      );
+      
+      if (!collegeRows[0]) {
+        console.log("ERROR: College not found");
+        return res.status(404).json({ success: false, error: "College not found" });
+      }
+      console.log("College found ✓");
+
+      // Delete old brochure if exists
+      if (collegeRows[0].brochure_url) {
+        console.log("Step 2: Removing old brochure...");
+        const oldPathMatch = collegeRows[0].brochure_url.match(/brochures\/(.+)$/);
+        if (oldPathMatch) {
+          const { error: delErr } = await supabase.storage.from('brochures').remove([`brochures/${oldPathMatch[1]}`]);
+          if (delErr) console.log("Old delete warning:", delErr.message);
+          else console.log("Old brochure deleted ✓");
+        }
+      }
+
+      // Create unique filename
+      const fileExt = req.file.originalname.split('.').pop();
+      const fileName = `college-${id}-${Date.now()}.${fileExt}`;
+      const filePath = `brochures/${fileName}`;
+      console.log("Step 3: New file path:", filePath);
+
+      // Upload to Supabase Storage
+      console.log("Step 4: Uploading to Supabase Storage...");
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('brochures')
+        .upload(filePath, req.file.buffer, {
+          contentType: req.file.mimetype,
+          cacheControl: '3600',
+          upsert: true
+        });
+
+      if (uploadError) {
+        console.log("=== SUPABASE STORAGE ERROR ===");
+        console.log("Full Error Object:", JSON.stringify(uploadError, null, 2));
+        console.log("Message:", uploadError.message);
+        console.log("Status Code:", uploadError.statusCode);
+        console.log("==============================");
+        return res.status(500).json({
+          success: false,
+          error: `Supabase Upload Failed: ${uploadError.message}`,
+          details: uploadError
+        });
+      }
+      console.log("Upload successful ✓", uploadData);
+
+      // Get public URL
+      const { data: urlData } = supabase.storage
+        .from('brochures')
+        .getPublicUrl(filePath);
+      
+      const publicUrl = urlData.publicUrl;
+      console.log("Step 5: Public URL:", publicUrl);
+
+      // Update database
+      console.log("Step 6: Updating database...");
+      const updateSql = toPgSql(`
+        UPDATE colleges SET
+          brochure_url = ?,
+          brochure_filename = ?,
+          brochure_mime_type = ?
+        WHERE id = ?
+      `);
+      
+      await db.query(updateSql, [
+        publicUrl,
+        req.file.originalname,
+        req.file.mimetype,
+        id
+      ]);
+      console.log("Database updated ✓");
+
+      // Return updated college
+      const { rows } = await db.query(
+        toPgSql("SELECT * FROM colleges WHERE id = ?"),
+        [id]
+      );
+
+      console.log("=== BROCHURE UPLOAD SUCCESS ===");
+      res.json({ 
+        success: true, 
+        message: "Brochure uploaded successfully",
+        data: rows[0] 
+      });
+
+    } catch (err) {
+      console.log("=== UNCAUGHT ERROR ===");
+      console.log("Message:", err.message);
+      console.log("Stack:", err.stack);
+      console.log("======================");
+      res.status(500).json({ 
+        success: false, 
+        error: err.message || "Unknown error",
+        details: err.toString()
+      });
+    }
   }
-});
+);
 
 // Delete brochure for a college
 router.delete("/colleges/:id/brochure", async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  
+
   try {
-    // Get current brochure info
+    // 1. Get current brochure info from DB
     const { rows } = await db.query(
-      toPgSql("SELECT brochure_url FROM colleges WHERE id = ?"),
+      toPgSql(
+        "SELECT brochure_filename FROM colleges WHERE id = ?"
+      ),
       [id]
     );
-    
+
     if (!rows[0]) {
-      return res.status(404).json({ success: false, error: "College not found" });
+      return res
+        .status(404)
+        .json({ success: false, error: "College not found" });
     }
 
-    const brochureUrl = rows[0].brochure_url;
-    
-    if (brochureUrl && supabase) {
-      // Extract path from URL (assumes format: .../brochures/filename)
-      const pathMatch = brochureUrl.match(/brochures\/(.+)$/);
-      if (pathMatch) {
-        await supabase.storage.from('brochures').remove([`brochures/${pathMatch[1]}`]);
+    // 2. Delete from Supabase Storage using stored filename
+    if (rows[0].brochure_filename && supabase) {
+      try {
+        await supabase.storage
+          .from("brochures")
+          .remove([rows[0].brochure_filename]);
+      } catch (removeErr) {
+        console.warn(
+          "Failed to remove brochure from storage:",
+          removeErr.message
+        );
       }
     }
 
-    // Clear DB fields
+    // 3. Clear DB fields
     await db.query(
-      toPgSql("UPDATE colleges SET brochure_url = NULL, brochure_filename = NULL, brochure_mime_type = NULL WHERE id = ?"),
+      toPgSql(
+        `UPDATE colleges SET
+          brochure_url = NULL,
+          brochure_filename = NULL,
+          brochure_mime_type = NULL
+        WHERE id = ?`
+      ),
       [id]
     );
 
-    res.json({ success: true, message: "Brochure removed successfully" });
+    res.json({
+      success: true,
+      message: "Brochure removed successfully",
+    });
   } catch (err) {
     console.error("Brochure delete error:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res
+      .status(500)
+      .json({ success: false, error: err.message });
   }
 });
 
+// ========================================
 // --- COURSES CRUD ---
+// ========================================
 
 router.get("/courses", async (req, res) => {
   try {
-    const { rows } = await db.query(
-      `
+    const { rows } = await db.query(`
       SELECT co.*, c.name as college_name, c.location
       FROM courses co
       JOIN colleges c ON c.id = co.college_id
       ORDER BY co.college_id, co.id
-    `
-    );
+    `);
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -379,14 +510,17 @@ router.get("/courses/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   try {
     const text = toPgSql(`
-    SELECT co.*, c.name as college_name, c.location
-    FROM courses co
-    JOIN colleges c ON c.id = co.college_id
-    WHERE co.id = ?
-  `);
+      SELECT co.*, c.name as college_name, c.location
+      FROM courses co
+      JOIN colleges c ON c.id = co.college_id
+      WHERE co.id = ?
+    `);
     const { rows } = await db.query(text, [id]);
     const row = rows[0];
-    if (!row) return res.status(404).json({ success: false, error: "Course not found" });
+    if (!row)
+      return res
+        .status(404)
+        .json({ success: false, error: "Course not found" });
     res.json({ success: true, data: row });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -394,14 +528,31 @@ router.get("/courses/:id", async (req, res) => {
 });
 
 router.post("/courses", async (req, res) => {
-  const { college_id, name, duration, total_fees, best_feature, location, specialization, features } = req.body;
+  const {
+    college_id,
+    name,
+    duration,
+    total_fees,
+    best_feature,
+    location,
+    specialization,
+    features,
+  } = req.body;
   if (!college_id || !name || !duration || total_fees == null) {
-    return res.status(400).json({ success: false, error: "college_id, name, duration, total_fees required" });
+    return res.status(400).json({
+      success: false,
+      error: "college_id, name, duration, total_fees required",
+    });
   }
   try {
-    const featuresValue = features ? (typeof features === "string" ? features : JSON.stringify(features)) : null;
+    const featuresValue = features
+      ? typeof features === "string"
+        ? features
+        : JSON.stringify(features)
+      : null;
     const text = toPgSql(`
-      INSERT INTO courses (college_id, name, duration, total_fees, best_feature, location, specialization, features)
+      INSERT INTO courses
+        (college_id, name, duration, total_fees, best_feature, location, specialization, features)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const values = [
@@ -423,14 +574,26 @@ router.post("/courses", async (req, res) => {
 
 router.put("/courses/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  const { college_id, name, duration, total_fees, best_feature, location, specialization, features } = req.body;
+  const {
+    college_id,
+    name,
+    duration,
+    total_fees,
+    best_feature,
+    location,
+    specialization,
+    features,
+  } = req.body;
   try {
     const { rows: existingRows } = await db.query(
       toPgSql("SELECT * FROM courses WHERE id = ?"),
       [id]
     );
     const existing = existingRows[0];
-    if (!existing) return res.status(404).json({ success: false, error: "Course not found" });
+    if (!existing)
+      return res
+        .status(404)
+        .json({ success: false, error: "Course not found" });
 
     const featuresValue =
       features !== undefined
@@ -455,10 +618,16 @@ router.put("/courses/:id", async (req, res) => {
       college_id || existing.college_id,
       name || existing.name,
       duration || existing.duration,
-      total_fees !== undefined ? parseInt(total_fees, 10) : existing.total_fees,
-      best_feature !== undefined ? best_feature : existing.best_feature,
+      total_fees !== undefined
+        ? parseInt(total_fees, 10)
+        : existing.total_fees,
+      best_feature !== undefined
+        ? best_feature
+        : existing.best_feature,
       location !== undefined ? location : existing.location,
-      specialization !== undefined ? specialization : existing.specialization,
+      specialization !== undefined
+        ? specialization
+        : existing.specialization,
       featuresValue,
       id,
     ];
@@ -480,21 +649,23 @@ router.delete("/courses/:id", async (req, res) => {
     [id]
   );
   if (result.rowCount === 0)
-    return res.status(404).json({ success: false, error: "Course not found" });
+    return res
+      .status(404)
+      .json({ success: false, error: "Course not found" });
   res.json({ success: true, message: "Course deleted" });
 });
 
-// --- ENQUIRIES (ADMIN) ---
+// ========================================
+// --- ENQUIRIES ---
+// ========================================
 
 router.get("/enquiries", async (req, res) => {
   try {
-    const { rows } = await db.query(
-      `
-        SELECT *
-        FROM enquiries
-        ORDER BY created_at DESC, id DESC
-      `
-    );
+    const { rows } = await db.query(`
+      SELECT *
+      FROM enquiries
+      ORDER BY created_at DESC, id DESC
+    `);
     res.json({ success: true, data: rows });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -509,20 +680,25 @@ router.delete("/enquiries/:id", async (req, res) => {
       [id]
     );
     if (result.rowCount === 0)
-      return res.status(404).json({ success: false, error: "Enquiry not found" });
+      return res
+        .status(404)
+        .json({ success: false, error: "Enquiry not found" });
     res.json({ success: true, message: "Enquiry deleted" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// --- IMPORT / EXPORT COLLEGES & COURSES (Excel / CSV) ---
-
+// ========================================
+// --- IMPORT / EXPORT ---
+// ========================================
 
 // Import colleges from Excel/CSV
 router.post("/colleges/import", upload.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ success: false, error: "No file uploaded" });
+    return res
+      .status(400)
+      .json({ success: false, error: "No file uploaded" });
   }
 
   try {
@@ -532,24 +708,17 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
     const rows = xlsx.utils.sheet_to_json(sheet, { defval: "" });
 
     const insertSql = toPgSql(`
-      INSERT INTO colleges 
-      (name, location, type, mode, best_feature, image_url, description, image_gallery, rating, reviews_count, admission_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO colleges
+        (name, location, type, mode, best_feature, image_url, description,
+         image_gallery, rating, reviews_count, admission_status, brochure_url)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const updateSql = toPgSql(`
       UPDATE colleges SET
-        name = ?,
-        location = ?,
-        type = ?,
-        mode = ?,
-        best_feature = ?,
-        image_url = ?,
-        description = ?,
-        image_gallery = ?,
-        rating = ?,
-        reviews_count = ?,
-        admission_status = ?
+        name = ?, location = ?, type = ?, mode = ?, best_feature = ?,
+        image_url = ?, description = ?, image_gallery = ?, rating = ?,
+        reviews_count = ?, admission_status = ?, brochure_url = ?
       WHERE id = ?
     `);
 
@@ -561,19 +730,37 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
 
       for (const row of rows) {
         const rawId = row.id || row.ID || "";
-        const id = String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
+        const id =
+          String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
 
         const name = row.name || row.Name;
         const location = row.location || row.Location;
         const type = row.type || row.Type || "Government";
         const mode = row.mode || row.Mode || "offline";
-        const best_feature = row.best_feature || row.BestFeature || row["Best Feature"] || null;
-        const image_url = row.image_url || row.Image || row["Image URL"] || null;
-        const description = row.description || row.Description || null;
-        const image_gallery = row.image_gallery || row.ImageGallery || row["Image Gallery"] || null;
+        const best_feature =
+          row.best_feature ||
+          row.BestFeature ||
+          row["Best Feature"] ||
+          null;
+        const image_url =
+          row.image_url || row.Image || row["Image URL"] || null;
+        const description =
+          row.description || row.Description || null;
+        const image_gallery =
+          row.image_gallery ||
+          row.ImageGallery ||
+          row["Image Gallery"] ||
+          null;
         const rating = row.rating || row.Rating || 4.5;
-        const reviews_count = row.reviews_count || row.ReviewsCount || 0;
-        const admission_status = row.admission_status || row.AdmissionStatus || "open";
+        const reviews_count =
+          row.reviews_count || row.ReviewsCount || 0;
+        const admission_status =
+          row.admission_status || row.AdmissionStatus || "open";
+        const brochure_url =
+          row.brochure_url ||
+          row.BrochureURL ||
+          row["Brochure URL"] ||
+          null;
 
         if (!name || !location) continue;
 
@@ -589,7 +776,9 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
 
         if (!existingId) {
           const { rows: byNameLoc } = await client.query(
-            toPgSql("SELECT id FROM colleges WHERE name = ? AND location = ?"),
+            toPgSql(
+              "SELECT id FROM colleges WHERE name = ? AND location = ?"
+            ),
             [name, location]
           );
           if (byNameLoc[0]) existingId = byNameLoc[0].id;
@@ -608,6 +797,7 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
             rating,
             reviews_count,
             admission_status,
+            brochure_url,
             existingId,
           ]);
           summary.updated++;
@@ -624,6 +814,7 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
             rating,
             reviews_count,
             admission_status,
+            brochure_url,
           ]);
           summary.inserted++;
         }
@@ -640,33 +831,48 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
     res.json({ success: true, summary });
   } catch (err) {
     console.error("Colleges import failed:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res
+      .status(500)
+      .json({ success: false, error: err.message });
   }
 });
 
 // Export all colleges as Excel
 router.get("/colleges-export", async (req, res) => {
   try {
-    const { rows } = await db.query("SELECT * FROM colleges ORDER BY id");
+    const { rows } = await db.query(
+      "SELECT * FROM colleges ORDER BY id"
+    );
     const worksheet = xlsx.utils.json_to_sheet(rows);
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, "Colleges");
-    const buffer = xlsx.write(workbook, { bookType: "xlsx", type: "buffer" });
+    const buffer = xlsx.write(workbook, {
+      bookType: "xlsx",
+      type: "buffer",
+    });
 
-    res.setHeader("Content-Disposition", "attachment; filename=colleges.xlsx");
-    res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=colleges.xlsx"
+    );
+    res.type(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
     res.send(buffer);
   } catch (err) {
     console.error("Colleges export failed:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res
+      .status(500)
+      .json({ success: false, error: err.message });
   }
 });
-
 
 // Import courses from Excel/CSV
 router.post("/courses/import", upload.single("file"), async (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ success: false, error: "No file uploaded" });
+    return res
+      .status(400)
+      .json({ success: false, error: "No file uploaded" });
   }
 
   try {
@@ -676,21 +882,15 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
     const rows = xlsx.utils.sheet_to_json(sheet, { defval: "" });
 
     const insertSql = toPgSql(`
-      INSERT INTO courses 
-      (college_id, name, duration, total_fees, best_feature, location, specialization, features)
+      INSERT INTO courses
+        (college_id, name, duration, total_fees, best_feature, location, specialization, features)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const updateSql = toPgSql(`
       UPDATE courses SET
-        college_id = ?,
-        name = ?,
-        duration = ?,
-        total_fees = ?,
-        best_feature = ?,
-        location = ?,
-        specialization = ?,
-        features = ?
+        college_id = ?, name = ?, duration = ?, total_fees = ?,
+        best_feature = ?, location = ?, specialization = ?, features = ?
       WHERE id = ?
     `);
 
@@ -702,36 +902,38 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
 
       for (const row of rows) {
         const rawId = row.id || row.ID || "";
-        const id = String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
+        const id =
+          String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
 
         const college_id = parseInt(
           row.college_id || row.CollegeId || row["College ID"],
           10
         );
-
         const name = row.name || row.Name;
         const duration = row.duration || row.Duration;
         const total_fees = parseInt(
           row.total_fees || row.TotalFees || row["Total Fees"],
           10
         );
-
-        const best_feature = row.best_feature || row.BestFeature || row["Best Feature"] || null;
+        const best_feature =
+          row.best_feature ||
+          row.BestFeature ||
+          row["Best Feature"] ||
+          null;
         const location = row.location || row.Location || null;
-        const specialization = row.specialization || row.Specialization || null;
+        const specialization =
+          row.specialization || row.Specialization || null;
         let features = row.features || row.Features || null;
 
         if (Array.isArray(features)) {
           features = JSON.stringify(features);
         }
 
-        // Required validation
         if (!college_id || !name || !duration || !total_fees) {
           summary.skipped++;
           continue;
         }
 
-        // FOREIGN KEY CHECK (important)
         const { rows: collegeRows } = await client.query(
           toPgSql("SELECT id FROM colleges WHERE id = ?"),
           [college_id]
@@ -788,25 +990,39 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
     res.json({ success: true, summary });
   } catch (err) {
     console.error("Courses import failed:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res
+      .status(500)
+      .json({ success: false, error: err.message });
   }
 });
 
 // Export all courses as Excel
 router.get("/courses-export", async (req, res) => {
   try {
-    const { rows } = await db.query("SELECT * FROM courses ORDER BY id");
+    const { rows } = await db.query(
+      "SELECT * FROM courses ORDER BY id"
+    );
     const worksheet = xlsx.utils.json_to_sheet(rows);
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, "Courses");
-    const buffer = xlsx.write(workbook, { bookType: "xlsx", type: "buffer" });
+    const buffer = xlsx.write(workbook, {
+      bookType: "xlsx",
+      type: "buffer",
+    });
 
-    res.setHeader("Content-Disposition", "attachment; filename=courses.xlsx");
-    res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=courses.xlsx"
+    );
+    res.type(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
     res.send(buffer);
   } catch (err) {
     console.error("Courses export failed:", err);
-    res.status(500).json({ success: false, error: err.message });
+    res
+      .status(500)
+      .json({ success: false, error: err.message });
   }
 });
 

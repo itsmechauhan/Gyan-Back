@@ -11,8 +11,16 @@ const db = require("../database.js");
 const { pool } = db;
 const multer = require("multer");
 const xlsx = require("xlsx");
+const { createClient } = require('@supabase/supabase-js');
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+// Supabase client for Storage operations
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabase = (supabaseUrl && supabaseServiceKey) 
+  ? createClient(supabaseUrl, supabaseServiceKey)
+  : null;
 
 // Convert SQLite-style "?" placeholders to Postgres "$1, $2, ..." placeholders
 function toPgSql(sql) {
@@ -194,6 +202,20 @@ router.put("/colleges/:id", async (req, res) => {
 router.delete("/colleges/:id", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   try {
+    // Delete associated brochure from storage if exists
+    if (supabase) {
+      const { rows } = await db.query(
+        toPgSql("SELECT brochure_url FROM colleges WHERE id = ?"),
+        [id]
+      );
+      if (rows[0]?.brochure_url) {
+        const pathMatch = rows[0].brochure_url.match(/brochures\/(.+)$/);
+        if (pathMatch) {
+          await supabase.storage.from('brochures').remove([`brochures/${pathMatch[1]}`]);
+        }
+      }
+    }
+    
     await db.query(toPgSql("DELETE FROM courses WHERE college_id = ?"), [id]);
     const result = await db.query(
       toPgSql("DELETE FROM colleges WHERE id = ?"),
@@ -203,6 +225,134 @@ router.delete("/colleges/:id", async (req, res) => {
       return res.status(404).json({ success: false, error: "College not found" });
     res.json({ success: true, message: "College deleted" });
   } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// --- BROCHURE UPLOAD/DELETE ---
+
+// Upload brochure for a college
+router.post("/colleges/:id/brochure", upload.single("brochure"), async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  
+  if (!req.file) {
+    return res.status(400).json({ success: false, error: "No brochure file uploaded" });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ success: false, error: "Supabase not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY" });
+  }
+
+  try {
+    // Check if college exists
+    const { rows: collegeRows } = await db.query(
+      toPgSql("SELECT id, brochure_url FROM colleges WHERE id = ?"),
+      [id]
+    );
+    
+    if (!collegeRows[0]) {
+      return res.status(404).json({ success: false, error: "College not found" });
+    }
+
+    // Delete old brochure if exists
+    if (collegeRows[0].brochure_url) {
+      const oldPathMatch = collegeRows[0].brochure_url.match(/brochures\/(.+)$/);
+      if (oldPathMatch) {
+        await supabase.storage.from('brochures').remove([`brochures/${oldPathMatch[1]}`]);
+      }
+    }
+
+    // Create unique filename: college-{id}-{timestamp}.{ext}
+    const fileExt = req.file.originalname.split('.').pop();
+    const fileName = `college-${id}-${Date.now()}.${fileExt}`;
+    const filePath = `brochures/${fileName}`;
+
+    // Upload to Supabase Storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('brochures')
+      .upload(filePath, req.file.buffer, {
+        contentType: req.file.mimetype,
+        cacheControl: '3600',
+        upsert: true
+      });
+
+    if (uploadError) {
+      throw uploadError;
+    }
+
+    // Get public URL
+    const { data: { publicUrl } } = supabase.storage
+      .from('brochures')
+      .getPublicUrl(filePath);
+
+    // Update database
+    const updateSql = toPgSql(`
+      UPDATE colleges SET
+        brochure_url = ?,
+        brochure_filename = ?,
+        brochure_mime_type = ?
+      WHERE id = ?
+    `);
+    
+    await db.query(updateSql, [
+      publicUrl,
+      req.file.originalname,
+      req.file.mimetype,
+      id
+    ]);
+
+    // Return updated college
+    const { rows } = await db.query(
+      toPgSql("SELECT * FROM colleges WHERE id = ?"),
+      [id]
+    );
+
+    res.json({ 
+      success: true, 
+      message: "Brochure uploaded successfully",
+      data: rows[0] 
+    });
+
+  } catch (err) {
+    console.error("Brochure upload error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Delete brochure for a college
+router.delete("/colleges/:id/brochure", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  
+  try {
+    // Get current brochure info
+    const { rows } = await db.query(
+      toPgSql("SELECT brochure_url FROM colleges WHERE id = ?"),
+      [id]
+    );
+    
+    if (!rows[0]) {
+      return res.status(404).json({ success: false, error: "College not found" });
+    }
+
+    const brochureUrl = rows[0].brochure_url;
+    
+    if (brochureUrl && supabase) {
+      // Extract path from URL (assumes format: .../brochures/filename)
+      const pathMatch = brochureUrl.match(/brochures\/(.+)$/);
+      if (pathMatch) {
+        await supabase.storage.from('brochures').remove([`brochures/${pathMatch[1]}`]);
+      }
+    }
+
+    // Clear DB fields
+    await db.query(
+      toPgSql("UPDATE colleges SET brochure_url = NULL, brochure_filename = NULL, brochure_mime_type = NULL WHERE id = ?"),
+      [id]
+    );
+
+    res.json({ success: true, message: "Brochure removed successfully" });
+  } catch (err) {
+    console.error("Brochure delete error:", err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

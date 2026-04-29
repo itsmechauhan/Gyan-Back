@@ -38,6 +38,8 @@ router.get("/", async (req, res) => {
       image_gallery,
       rating,
       reviews_count,
+      brochure_url,
+      brochure_filename,
       nirf_rank,
       min_fees,
       max_fees,
@@ -109,6 +111,10 @@ router.get("/", async (req, res) => {
       description: r.description,
 
       image_url: r.image_url,
+
+      brochure_url: r.brochure_url,
+
+      brochure_filename: r.brochure_filename,
 
       nirf_rank: r.nirf_rank,
 

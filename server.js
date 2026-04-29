@@ -17,6 +17,12 @@ const universityRoutes = require("./routes/University.js");
 const app = express();
 const PORT = process.env.PORT || 5000;
 const aviationEnquiryRoute = require("./routes/aviationEnquiry.js");
+// Add this line with your other imports
+const courseCallbackRoute = require("./routes/courseCallback.js");
+
+// Add this line with your other app.use() routes
+
+
 /* =============================
    CORS CONFIGURATION (FINAL)
 ============================= */
@@ -71,6 +77,8 @@ app.use("/api/enquiries", enquiriesRoute);
 app.use("/api/aviation-enquiry", aviationEnquiryRoute);
 app.use("/api/universities", universityRoutes);
 app.use("/api/demoform", demoFormRoutes);
+app.use("/api/course-callback", courseCallbackRoute);
+
 /* =============================
    TEST ROUTE
 ============================= */

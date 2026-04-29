@@ -14,8 +14,6 @@ function toPgSql(sql) {
   return sql.replace(/\?/g, () => `$${++index}`);
 }
 
-//seacrh college 
-
 // Budget ranges in INR (like Croma price filter)
 const BUDGET_RANGES = [
   { id: "0-50k", min: 0, max: 50000, label: "Up to ₹50,000" },
@@ -50,6 +48,8 @@ router.get("/", async (req, res) => {
       c.image_gallery as college_image_gallery,
       c.rating,
       c.reviews_count,
+      c.brochure_url,
+      c.brochure_filename,
       COALESCE(c.admission_status, 'open') as admission_status,
       co.id as course_id,
       co.name as course_name,
@@ -147,6 +147,8 @@ router.get("/", async (req, res) => {
       rating: r.rating || 4.5,
       reviews_count: r.reviews_count || 0,
       admission_status: r.admission_status || "open",
+      brochure_url: r.brochure_url,
+      brochure_filename: r.brochure_filename,
     }));
 
     res.json({ success: true, count: data.length, data });

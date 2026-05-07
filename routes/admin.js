@@ -3,6 +3,8 @@
  * GET/POST/PUT/DELETE /api/admin/colleges
  * GET/POST/PUT/DELETE /api/admin/courses
  * POST/DELETE /api/admin/colleges/:id/brochure
+ * POST /api/admin/colleges/:id/brochure-direct-url (for files > 4 MB)
+ * POST /api/admin/colleges/:id/brochure-confirm
  * Password: GyanPradeep@001
  */
 
@@ -17,10 +19,11 @@ const { createClient } = require("@supabase/supabase-js");
 // Multer for Excel/CSV imports
 const upload = multer({ storage: multer.memoryStorage() });
 
-// Multer for brochure upload (5MB limit, PDF/image only)
+// Multer for SMALL brochure uploads (< 4 MB - via Vercel)
+// Larger files use direct-upload routes that bypass Vercel
 const brochureUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 4 * 1024 * 1024 }, // 4 MB (Vercel limit)
   fileFilter: (req, file, cb) => {
     const allowed = [
       "application/pdf",
@@ -252,13 +255,16 @@ router.delete("/colleges/:id", async (req, res) => {
     if (supabase) {
       try {
         const { rows: collegeRows } = await db.query(
-          toPgSql("SELECT brochure_filename FROM colleges WHERE id = ?"),
+          toPgSql("SELECT brochure_url FROM colleges WHERE id = ?"),
           [id]
         );
-        if (collegeRows[0] && collegeRows[0].brochure_filename) {
-          await supabase.storage
-            .from("brochures")
-            .remove([collegeRows[0].brochure_filename]);
+        if (collegeRows[0] && collegeRows[0].brochure_url) {
+          const pathMatch = collegeRows[0].brochure_url.match(/brochures\/(.+)$/);
+          if (pathMatch) {
+            await supabase.storage
+              .from("brochures")
+              .remove([`brochures/${pathMatch[1]}`]);
+          }
         }
       } catch (storageErr) {
         console.warn(
@@ -290,33 +296,33 @@ router.delete("/colleges/:id", async (req, res) => {
 // ★★★ BROCHURE UPLOAD / DELETE ★★★
 // ========================================
 
-// Upload brochure for a college
+// MAX file size: 50 MB (Supabase free tier limit)
+const MAX_BROCHURE_SIZE = 50 * 1024 * 1024;
+
+// ----------------------------------------
+// 1. SMALL FILE UPLOAD (< 4 MB) via Vercel
+// ----------------------------------------
 router.post(
   "/colleges/:id/brochure",
   brochureUpload.single("brochure"),
   async (req, res) => {
     const id = parseInt(req.params.id, 10);
 
-    console.log("=== BROCHURE UPLOAD START ===");
+    console.log("=== BROCHURE UPLOAD START (small file) ===");
     console.log("College ID:", id);
     console.log("File received:", req.file ? "YES" : "NO");
-    console.log("Supabase configured:", !!supabase);
-    console.log("SUPABASE_URL exists:", !!process.env.SUPABASE_URL);
-    console.log("SUPABASE_KEY exists:", !!process.env.SUPABASE_SERVICE_ROLE_KEY);
 
     if (!req.file) {
-      console.log("ERROR: No file uploaded");
       return res.status(400).json({ success: false, error: "No brochure file uploaded" });
     }
 
     console.log("File details:", {
       name: req.file.originalname,
       type: req.file.mimetype,
-      size: req.file.size
+      size: `${(req.file.size / 1024 / 1024).toFixed(2)} MB`
     });
 
     if (!supabase) {
-      console.log("ERROR: Supabase client is null");
       return res.status(500).json({ 
         success: false, 
         error: "Supabase not configured. Check SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY" 
@@ -325,26 +331,20 @@ router.post(
 
     try {
       // Check if college exists
-      console.log("Step 1: Checking college in DB...");
       const { rows: collegeRows } = await db.query(
         toPgSql("SELECT id, brochure_url FROM colleges WHERE id = ?"),
         [id]
       );
       
       if (!collegeRows[0]) {
-        console.log("ERROR: College not found");
         return res.status(404).json({ success: false, error: "College not found" });
       }
-      console.log("College found ✓");
 
       // Delete old brochure if exists
       if (collegeRows[0].brochure_url) {
-        console.log("Step 2: Removing old brochure...");
         const oldPathMatch = collegeRows[0].brochure_url.match(/brochures\/(.+)$/);
         if (oldPathMatch) {
-          const { error: delErr } = await supabase.storage.from('brochures').remove([`brochures/${oldPathMatch[1]}`]);
-          if (delErr) console.log("Old delete warning:", delErr.message);
-          else console.log("Old brochure deleted ✓");
+          await supabase.storage.from('brochures').remove([`brochures/${oldPathMatch[1]}`]);
         }
       }
 
@@ -352,10 +352,8 @@ router.post(
       const fileExt = req.file.originalname.split('.').pop();
       const fileName = `college-${id}-${Date.now()}.${fileExt}`;
       const filePath = `brochures/${fileName}`;
-      console.log("Step 3: New file path:", filePath);
 
       // Upload to Supabase Storage
-      console.log("Step 4: Uploading to Supabase Storage...");
       const { data: uploadData, error: uploadError } = await supabase.storage
         .from('brochures')
         .upload(filePath, req.file.buffer, {
@@ -365,18 +363,12 @@ router.post(
         });
 
       if (uploadError) {
-        console.log("=== SUPABASE STORAGE ERROR ===");
-        console.log("Full Error Object:", JSON.stringify(uploadError, null, 2));
-        console.log("Message:", uploadError.message);
-        console.log("Status Code:", uploadError.statusCode);
-        console.log("==============================");
+        console.log("Supabase upload error:", uploadError.message);
         return res.status(500).json({
           success: false,
           error: `Supabase Upload Failed: ${uploadError.message}`,
-          details: uploadError
         });
       }
-      console.log("Upload successful ✓", uploadData);
 
       // Get public URL
       const { data: urlData } = supabase.storage
@@ -384,10 +376,8 @@ router.post(
         .getPublicUrl(filePath);
       
       const publicUrl = urlData.publicUrl;
-      console.log("Step 5: Public URL:", publicUrl);
 
       // Update database
-      console.log("Step 6: Updating database...");
       const updateSql = toPgSql(`
         UPDATE colleges SET
           brochure_url = ?,
@@ -402,7 +392,6 @@ router.post(
         req.file.mimetype,
         id
       ]);
-      console.log("Database updated ✓");
 
       // Return updated college
       const { rows } = await db.query(
@@ -418,61 +407,236 @@ router.post(
       });
 
     } catch (err) {
-      console.log("=== UNCAUGHT ERROR ===");
-      console.log("Message:", err.message);
-      console.log("Stack:", err.stack);
-      console.log("======================");
+      console.log("Upload error:", err.message);
       res.status(500).json({ 
         success: false, 
         error: err.message || "Unknown error",
-        details: err.toString()
       });
     }
   }
 );
 
-// Delete brochure for a college
-router.delete("/colleges/:id/brochure", async (req, res) => {
+// ----------------------------------------
+// 2. LARGE FILE - Generate Signed URL (4 MB - 50 MB)
+// ----------------------------------------
+router.post("/colleges/:id/brochure-direct-url", async (req, res) => {
   const id = parseInt(req.params.id, 10);
+  const { filename, mimetype, size } = req.body;
+
+  console.log("=== DIRECT UPLOAD URL REQUEST ===");
+  console.log("College ID:", id);
+  console.log("Filename:", filename);
+  console.log("Size:", size ? `${(size / 1024 / 1024).toFixed(2)} MB` : "unknown");
+
+  if (!filename || !mimetype) {
+    return res.status(400).json({ 
+      success: false, 
+      error: "filename and mimetype required" 
+    });
+  }
+
+  // Validate file size (50 MB Supabase free tier limit)
+  if (size && size > MAX_BROCHURE_SIZE) {
+    return res.status(400).json({
+      success: false,
+      error: `File too large (${(size / 1024 / 1024).toFixed(1)} MB). Max allowed: 50 MB (Supabase free tier limit).`
+    });
+  }
+
+  // Validate file type
+  const allowed = ["application/pdf", "image/jpeg", "image/png", "image/webp"];
+  if (!allowed.includes(mimetype)) {
+    return res.status(400).json({
+      success: false,
+      error: "Only PDF, JPG, PNG, WEBP files allowed."
+    });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ 
+      success: false, 
+      error: "Supabase not configured" 
+    });
+  }
 
   try {
-    // 1. Get current brochure info from DB
+    // Verify college exists
     const { rows } = await db.query(
-      toPgSql(
-        "SELECT brochure_filename FROM colleges WHERE id = ?"
-      ),
+      toPgSql("SELECT id, brochure_url FROM colleges WHERE id = ?"),
       [id]
     );
 
     if (!rows[0]) {
-      return res
-        .status(404)
-        .json({ success: false, error: "College not found" });
+      return res.status(404).json({ success: false, error: "College not found" });
     }
 
-    // 2. Delete from Supabase Storage using stored filename
-    if (rows[0].brochure_filename && supabase) {
-      try {
-        await supabase.storage
-          .from("brochures")
-          .remove([rows[0].brochure_filename]);
-      } catch (removeErr) {
-        console.warn(
-          "Failed to remove brochure from storage:",
-          removeErr.message
-        );
+    // Delete old brochure if exists
+    if (rows[0].brochure_url) {
+      const oldPathMatch = rows[0].brochure_url.match(/brochures\/(.+)$/);
+      if (oldPathMatch) {
+        try {
+          await supabase.storage.from('brochures').remove([`brochures/${oldPathMatch[1]}`]);
+          console.log("Old brochure deleted");
+        } catch (e) {
+          console.warn("Old delete warning:", e.message);
+        }
       }
     }
 
-    // 3. Clear DB fields
+    // Generate unique filename
+    const fileExt = filename.split('.').pop();
+    const newFileName = `college-${id}-${Date.now()}.${fileExt}`;
+    const filePath = `brochures/${newFileName}`;
+
+    // Create signed upload URL (valid for 5 minutes)
+    const { data, error } = await supabase.storage
+      .from('brochures')
+      .createSignedUploadUrl(filePath);
+
+    if (error) {
+      console.error("Signed URL error:", error);
+      return res.status(500).json({ success: false, error: error.message });
+    }
+
+    console.log("Signed URL generated for:", filePath);
+
+    res.json({
+      success: true,
+      uploadUrl: data.signedUrl,
+      token: data.token,
+      filePath: filePath,
+      fileName: newFileName,
+    });
+
+  } catch (err) {
+    console.error("Direct URL generation error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------
+// 3. CONFIRM upload after direct upload
+// ----------------------------------------
+router.post("/colleges/:id/brochure-confirm", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const { filePath, originalFilename, mimetype } = req.body;
+
+  console.log("=== CONFIRM UPLOAD ===");
+  console.log("College ID:", id);
+  console.log("File Path:", filePath);
+
+  if (!filePath || !originalFilename) {
+    return res.status(400).json({ 
+      success: false, 
+      error: "filePath and originalFilename required" 
+    });
+  }
+
+  if (!supabase) {
+    return res.status(500).json({ 
+      success: false, 
+      error: "Supabase not configured" 
+    });
+  }
+
+  try {
+    // Verify file actually exists in storage
+    const folderPath = filePath.substring(0, filePath.lastIndexOf('/'));
+    const fileNameOnly = filePath.substring(filePath.lastIndexOf('/') + 1);
+    
+    const { data: listData, error: listError } = await supabase.storage
+      .from('brochures')
+      .list(folderPath, { search: fileNameOnly });
+
+    if (listError || !listData || listData.length === 0) {
+      console.warn("File verification failed:", listError?.message);
+      return res.status(400).json({
+        success: false,
+        error: "File not found in storage. Upload may have failed."
+      });
+    }
+
+    // Get public URL
+    const { data: urlData } = supabase.storage
+      .from('brochures')
+      .getPublicUrl(filePath);
+
+    const publicUrl = urlData.publicUrl;
+    console.log("Public URL:", publicUrl);
+
+    // Update database
+    const updateSql = toPgSql(`
+      UPDATE colleges SET
+        brochure_url = ?,
+        brochure_filename = ?,
+        brochure_mime_type = ?
+      WHERE id = ?
+    `);
+
+    await db.query(updateSql, [
+      publicUrl,
+      originalFilename,
+      mimetype || 'application/pdf',
+      id
+    ]);
+
+    // Return updated college
+    const { rows } = await db.query(
+      toPgSql("SELECT * FROM colleges WHERE id = ?"),
+      [id]
+    );
+
+    console.log("=== CONFIRM SUCCESS ===");
+    res.json({
+      success: true,
+      message: "Brochure confirmed and saved",
+      data: rows[0]
+    });
+
+  } catch (err) {
+    console.error("Confirm error:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------
+// 4. DELETE brochure for a college
+// ----------------------------------------
+router.delete("/colleges/:id/brochure", async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+
+  try {
+    // Get current brochure info from DB
+    const { rows } = await db.query(
+      toPgSql("SELECT brochure_url FROM colleges WHERE id = ?"),
+      [id]
+    );
+
+    if (!rows[0]) {
+      return res.status(404).json({ success: false, error: "College not found" });
+    }
+
+    // Delete from Supabase Storage
+    if (rows[0].brochure_url && supabase) {
+      const pathMatch = rows[0].brochure_url.match(/brochures\/(.+)$/);
+      if (pathMatch) {
+        try {
+          await supabase.storage
+            .from("brochures")
+            .remove([`brochures/${pathMatch[1]}`]);
+        } catch (removeErr) {
+          console.warn("Failed to remove from storage:", removeErr.message);
+        }
+      }
+    }
+
+    // Clear DB fields
     await db.query(
-      toPgSql(
-        `UPDATE colleges SET
-          brochure_url = NULL,
-          brochure_filename = NULL,
-          brochure_mime_type = NULL
-        WHERE id = ?`
-      ),
+      toPgSql(`UPDATE colleges SET
+        brochure_url = NULL,
+        brochure_filename = NULL,
+        brochure_mime_type = NULL
+      WHERE id = ?`),
       [id]
     );
 
@@ -482,9 +646,7 @@ router.delete("/colleges/:id/brochure", async (req, res) => {
     });
   } catch (err) {
     console.error("Brochure delete error:", err);
-    res
-      .status(500)
-      .json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -518,9 +680,7 @@ router.get("/courses/:id", async (req, res) => {
     const { rows } = await db.query(text, [id]);
     const row = rows[0];
     if (!row)
-      return res
-        .status(404)
-        .json({ success: false, error: "Course not found" });
+      return res.status(404).json({ success: false, error: "Course not found" });
     res.json({ success: true, data: row });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -591,9 +751,7 @@ router.put("/courses/:id", async (req, res) => {
     );
     const existing = existingRows[0];
     if (!existing)
-      return res
-        .status(404)
-        .json({ success: false, error: "Course not found" });
+      return res.status(404).json({ success: false, error: "Course not found" });
 
     const featuresValue =
       features !== undefined
@@ -618,16 +776,10 @@ router.put("/courses/:id", async (req, res) => {
       college_id || existing.college_id,
       name || existing.name,
       duration || existing.duration,
-      total_fees !== undefined
-        ? parseInt(total_fees, 10)
-        : existing.total_fees,
-      best_feature !== undefined
-        ? best_feature
-        : existing.best_feature,
+      total_fees !== undefined ? parseInt(total_fees, 10) : existing.total_fees,
+      best_feature !== undefined ? best_feature : existing.best_feature,
       location !== undefined ? location : existing.location,
-      specialization !== undefined
-        ? specialization
-        : existing.specialization,
+      specialization !== undefined ? specialization : existing.specialization,
       featuresValue,
       id,
     ];
@@ -649,9 +801,7 @@ router.delete("/courses/:id", async (req, res) => {
     [id]
   );
   if (result.rowCount === 0)
-    return res
-      .status(404)
-      .json({ success: false, error: "Course not found" });
+    return res.status(404).json({ success: false, error: "Course not found" });
   res.json({ success: true, message: "Course deleted" });
 });
 
@@ -680,9 +830,7 @@ router.delete("/enquiries/:id", async (req, res) => {
       [id]
     );
     if (result.rowCount === 0)
-      return res
-        .status(404)
-        .json({ success: false, error: "Enquiry not found" });
+      return res.status(404).json({ success: false, error: "Enquiry not found" });
     res.json({ success: true, message: "Enquiry deleted" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -696,9 +844,7 @@ router.delete("/enquiries/:id", async (req, res) => {
 // Import colleges from Excel/CSV
 router.post("/colleges/import", upload.single("file"), async (req, res) => {
   if (!req.file) {
-    return res
-      .status(400)
-      .json({ success: false, error: "No file uploaded" });
+    return res.status(400).json({ success: false, error: "No file uploaded" });
   }
 
   try {
@@ -730,37 +876,20 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
 
       for (const row of rows) {
         const rawId = row.id || row.ID || "";
-        const id =
-          String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
+        const id = String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
 
         const name = row.name || row.Name;
         const location = row.location || row.Location;
         const type = row.type || row.Type || "Government";
         const mode = row.mode || row.Mode || "offline";
-        const best_feature =
-          row.best_feature ||
-          row.BestFeature ||
-          row["Best Feature"] ||
-          null;
-        const image_url =
-          row.image_url || row.Image || row["Image URL"] || null;
-        const description =
-          row.description || row.Description || null;
-        const image_gallery =
-          row.image_gallery ||
-          row.ImageGallery ||
-          row["Image Gallery"] ||
-          null;
+        const best_feature = row.best_feature || row.BestFeature || row["Best Feature"] || null;
+        const image_url = row.image_url || row.Image || row["Image URL"] || null;
+        const description = row.description || row.Description || null;
+        const image_gallery = row.image_gallery || row.ImageGallery || row["Image Gallery"] || null;
         const rating = row.rating || row.Rating || 4.5;
-        const reviews_count =
-          row.reviews_count || row.ReviewsCount || 0;
-        const admission_status =
-          row.admission_status || row.AdmissionStatus || "open";
-        const brochure_url =
-          row.brochure_url ||
-          row.BrochureURL ||
-          row["Brochure URL"] ||
-          null;
+        const reviews_count = row.reviews_count || row.ReviewsCount || 0;
+        const admission_status = row.admission_status || row.AdmissionStatus || "open";
+        const brochure_url = row.brochure_url || row.BrochureURL || row["Brochure URL"] || null;
 
         if (!name || !location) continue;
 
@@ -776,9 +905,7 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
 
         if (!existingId) {
           const { rows: byNameLoc } = await client.query(
-            toPgSql(
-              "SELECT id FROM colleges WHERE name = ? AND location = ?"
-            ),
+            toPgSql("SELECT id FROM colleges WHERE name = ? AND location = ?"),
             [name, location]
           );
           if (byNameLoc[0]) existingId = byNameLoc[0].id;
@@ -786,35 +913,15 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
 
         if (existingId) {
           await client.query(updateSql, [
-            name,
-            location,
-            type,
-            mode,
-            best_feature,
-            image_url,
-            description,
-            image_gallery,
-            rating,
-            reviews_count,
-            admission_status,
-            brochure_url,
+            name, location, type, mode, best_feature, image_url, description,
+            image_gallery, rating, reviews_count, admission_status, brochure_url,
             existingId,
           ]);
           summary.updated++;
         } else {
           await client.query(insertSql, [
-            name,
-            location,
-            type,
-            mode,
-            best_feature,
-            image_url,
-            description,
-            image_gallery,
-            rating,
-            reviews_count,
-            admission_status,
-            brochure_url,
+            name, location, type, mode, best_feature, image_url, description,
+            image_gallery, rating, reviews_count, admission_status, brochure_url,
           ]);
           summary.inserted++;
         }
@@ -831,48 +938,32 @@ router.post("/colleges/import", upload.single("file"), async (req, res) => {
     res.json({ success: true, summary });
   } catch (err) {
     console.error("Colleges import failed:", err);
-    res
-      .status(500)
-      .json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // Export all colleges as Excel
 router.get("/colleges-export", async (req, res) => {
   try {
-    const { rows } = await db.query(
-      "SELECT * FROM colleges ORDER BY id"
-    );
+    const { rows } = await db.query("SELECT * FROM colleges ORDER BY id");
     const worksheet = xlsx.utils.json_to_sheet(rows);
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, "Colleges");
-    const buffer = xlsx.write(workbook, {
-      bookType: "xlsx",
-      type: "buffer",
-    });
+    const buffer = xlsx.write(workbook, { bookType: "xlsx", type: "buffer" });
 
-    res.setHeader(
-      "Content-Disposition",
-      "attachment; filename=colleges.xlsx"
-    );
-    res.type(
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
+    res.setHeader("Content-Disposition", "attachment; filename=colleges.xlsx");
+    res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.send(buffer);
   } catch (err) {
     console.error("Colleges export failed:", err);
-    res
-      .status(500)
-      .json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // Import courses from Excel/CSV
 router.post("/courses/import", upload.single("file"), async (req, res) => {
   if (!req.file) {
-    return res
-      .status(400)
-      .json({ success: false, error: "No file uploaded" });
+    return res.status(400).json({ success: false, error: "No file uploaded" });
   }
 
   try {
@@ -902,27 +993,19 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
 
       for (const row of rows) {
         const rawId = row.id || row.ID || "";
-        const id =
-          String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
+        const id = String(rawId).trim() !== "" ? parseInt(rawId, 10) : null;
 
         const college_id = parseInt(
-          row.college_id || row.CollegeId || row["College ID"],
-          10
+          row.college_id || row.CollegeId || row["College ID"], 10
         );
         const name = row.name || row.Name;
         const duration = row.duration || row.Duration;
         const total_fees = parseInt(
-          row.total_fees || row.TotalFees || row["Total Fees"],
-          10
+          row.total_fees || row.TotalFees || row["Total Fees"], 10
         );
-        const best_feature =
-          row.best_feature ||
-          row.BestFeature ||
-          row["Best Feature"] ||
-          null;
+        const best_feature = row.best_feature || row.BestFeature || row["Best Feature"] || null;
         const location = row.location || row.Location || null;
-        const specialization =
-          row.specialization || row.Specialization || null;
+        const specialization = row.specialization || row.Specialization || null;
         let features = row.features || row.Features || null;
 
         if (Array.isArray(features)) {
@@ -939,7 +1022,6 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
           [college_id]
         );
         if (!collegeRows[0]) {
-          console.log("Invalid college_id:", college_id);
           summary.skipped++;
           continue;
         }
@@ -951,15 +1033,8 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
           );
           if (existingRows[0]) {
             await client.query(updateSql, [
-              college_id,
-              name,
-              duration,
-              total_fees,
-              best_feature,
-              location,
-              specialization,
-              features,
-              id,
+              college_id, name, duration, total_fees, best_feature,
+              location, specialization, features, id,
             ]);
             summary.updated++;
             continue;
@@ -967,14 +1042,8 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
         }
 
         await client.query(insertSql, [
-          college_id,
-          name,
-          duration,
-          total_fees,
-          best_feature,
-          location,
-          specialization,
-          features,
+          college_id, name, duration, total_fees, best_feature,
+          location, specialization, features,
         ]);
         summary.inserted++;
       }
@@ -990,39 +1059,25 @@ router.post("/courses/import", upload.single("file"), async (req, res) => {
     res.json({ success: true, summary });
   } catch (err) {
     console.error("Courses import failed:", err);
-    res
-      .status(500)
-      .json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // Export all courses as Excel
 router.get("/courses-export", async (req, res) => {
   try {
-    const { rows } = await db.query(
-      "SELECT * FROM courses ORDER BY id"
-    );
+    const { rows } = await db.query("SELECT * FROM courses ORDER BY id");
     const worksheet = xlsx.utils.json_to_sheet(rows);
     const workbook = xlsx.utils.book_new();
     xlsx.utils.book_append_sheet(workbook, worksheet, "Courses");
-    const buffer = xlsx.write(workbook, {
-      bookType: "xlsx",
-      type: "buffer",
-    });
+    const buffer = xlsx.write(workbook, { bookType: "xlsx", type: "buffer" });
 
-    res.setHeader(
-      "Content-Disposition",
-      "attachment; filename=courses.xlsx"
-    );
-    res.type(
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    );
+    res.setHeader("Content-Disposition", "attachment; filename=courses.xlsx");
+    res.type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.send(buffer);
   } catch (err) {
     console.error("Courses export failed:", err);
-    res
-      .status(500)
-      .json({ success: false, error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

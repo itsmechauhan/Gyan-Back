@@ -32,6 +32,9 @@ const allowedOrigins = [
   "https://www.gyangangaeducation.in",
   "http://localhost:5173",
   "http://localhost:3000",
+  "https://localhost",
+  "capacitor://localhost",
+  "ionic://localhost"
 ];
 
 app.use((req, res, next) => {
@@ -39,6 +42,9 @@ app.use((req, res, next) => {
 
   if (allowedOrigins.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    // allow Capacitor/WebView fallback
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
 
   res.setHeader(
